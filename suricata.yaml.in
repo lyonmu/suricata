@@ -97,7 +97,7 @@ outputs:
   # Extensible Event Format (nicknamed EVE) event log in JSON format
   - eve-log:
       enabled: yes
-      filetype: regular #regular|syslog|unix_dgram|unix_stream|redis
+      filetype: regular #regular|syslog|unix_dgram|unix_stream|redis|kafka
       filename: eve.json
       # Enable for multi-threaded eve.json output; output files are amended with
       # an identifier, e.g., eve.9.json
@@ -128,6 +128,42 @@ outputs:
                                       ## this number of events. Set to 0 to disable trimming.
                                       ## Only used when mode is set to xadd/stream.
       #  stream-trim-exact: false     ## Trim exactly to the maximum stream length above.
+      #kafka:
+      #  # Required settings
+      #  brokers: localhost:9092          # Comma-separated broker list
+      #  topic: suricata                  # Target topic (should be pre-created)
+      #
+      #  # Optional identification
+      #  client-id: suricata              # Client ID (default: suricata)
+      #
+      #  # Performance settings
+      #  compression: none                # none|gzip|snappy|lz4|zstd (default: none)
+      #  acks: 1                          # 0|1|all (default: 1)
+      #                                   #   0 = fire and forget (fastest, no durability)
+      #                                   #   1 = leader ack (balanced)
+      #                                   #   all = all replicas (slowest, most durable)
+      #  partition: -1                    # -1 for automatic partitioning
+      #  ring-buffer-size: 65536          # Local ring buffer capacity (default: 65536)
+      #
+      #  # librdkafka internal queue settings (usually don't need to change)
+      #  # Batching is handled by librdkafka internally via linger.ms
+      #  queue-buffering-max-messages: 100000  # Max messages in queue (default: 100000)
+      #  queue-buffering-max-kbytes: 1048576   # Max queue size in KB (default: 1GB)
+      #  message-timeout-ms: 300000       # Message timeout (default: 5 min)
+      #  socket-timeout-ms: 30000         # Socket timeout (default: 30 sec)
+      #  metadata-max-age-ms: 300000      # Metadata refresh interval (default: 5 min)
+      #  retry-backoff-ms: 100            # Retry backoff interval (default: 100ms)
+      #  linger-ms: 5                     # Producer linger time for batching (default: 5ms)
+      #
+      #  # Security settings
+      #  security-protocol: plaintext     # plaintext|ssl|sasl_plaintext|sasl_ssl
+      #  ssl-ca-location: /path/to/ca-cert
+      #  ssl-certificate-location: /path/to/client-cert
+      #  ssl-key-location: /path/to/client-key
+      #  ssl-key-password:                # Password for SSL key (if encrypted)
+      #  sasl-mechanism: PLAIN            # PLAIN|SCRAM-SHA-256|SCRAM-SHA-512
+      #  sasl-username: user
+      #  sasl-password: pass
                                       ## Default: use inexact trimming (inexact by a few
                                       ## tens of items)
                                       ## Only used when mode is set to xadd/stream.

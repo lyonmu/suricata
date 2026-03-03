@@ -1990,6 +1990,82 @@
         fi
     fi
 
+# =============================================================================
+# librdkafka - Kafka support
+# =============================================================================
+    AC_ARG_ENABLE(kafka,
+        AS_HELP_STRING([--enable-kafka], [Enable Kafka support]),
+        [enable_kafka="$enableval"],
+        [enable_kafka="no"])
+
+    AC_ARG_WITH(librdkafka_includes,
+        [  --with-librdkafka-includes=DIR  librdkafka include directory],
+        [with_librdkafka_includes="$withval"],
+        [with_librdkafka_includes="no"])
+
+    AC_ARG_WITH(librdkafka_libraries,
+        [  --with-librdkafka-libraries=DIR    librdkafka library directory],
+        [with_librdkafka_libraries="$withval"],
+        [with_librdkafka_libraries="no"])
+
+    if test "$enable_kafka" = "yes"; then
+        # Try pkg-config first (preferred method)
+        PKG_CHECK_MODULES([RDKAFKA], [rdkafka >= 1.0.0],
+            [have_rdkafka_pkgconfig="yes"],
+            [have_rdkafka_pkgconfig="no"])
+
+        if test "$have_rdkafka_pkgconfig" = "yes"; then
+            # pkg-config found librdkafka - use those flags
+            AC_DEFINE([HAVE_LIBRDKAFKA], [1], [librdkafka available via pkg-config])
+            CPPFLAGS="$CPPFLAGS $RDKAFKA_CFLAGS"
+            LIBS="$LIBS $RDKAFKA_LIBS"
+            enable_kafka="yes"
+            AC_MSG_NOTICE([librdkafka support enabled (via pkg-config)])
+        else
+            # Fallback to manual detection
+            if test "$with_librdkafka_includes" != "no"; then
+                CPPFLAGS="${CPPFLAGS} -I${with_librdkafka_includes}"
+            fi
+
+            AC_CHECK_HEADER([librdkafka/rdkafka.h],
+                [HAVE_LIBRDKAFKA_H="yes"],
+                [HAVE_LIBRDKAFKA_H="no"])
+
+            if test "$HAVE_LIBRDKAFKA_H" = "yes"; then
+                if test "$with_librdkafka_libraries" != "no"; then
+                    LDFLAGS="${LDFLAGS} -L${with_librdkafka_libraries}"
+                fi
+
+                # Note: library name is 'rdkafka' not 'librdkafka'
+                AC_CHECK_LIB([rdkafka], [rd_kafka_new],
+                    [HAVE_LIBRDKAFKA_LIB="yes"],
+                    [HAVE_LIBRDKAFKA_LIB="no"])
+            fi
+
+            if test "$HAVE_LIBRDKAFKA_H" = "yes" && test "$HAVE_LIBRDKAFKA_LIB" = "yes"; then
+                AC_DEFINE([HAVE_LIBRDKAFKA], [1], [librdkafka available])
+                enable_kafka="yes"
+                LIBS="${LIBS} -lrdkafka"
+                AC_MSG_NOTICE([librdkafka support enabled (manual detection)])
+            else
+                echo
+                echo "   ERROR: librdkafka not found."
+                echo "   Install librdkafka-dev (Debian/Ubuntu) or librdkafka-devel (RHEL/Fedora)"
+                echo
+                echo "   Ubuntu/Debian:"
+                echo "       sudo apt-get install librdkafka-dev"
+                echo
+                echo "   RHEL/CentOS/Fedora:"
+                echo "       sudo dnf install librdkafka-devel"
+                echo
+                echo "   Or use --disable-kafka to build without Kafka support"
+                echo
+                exit 1
+            fi
+        fi
+    fi
+    AM_CONDITIONAL([HAVE_LIBRDKAFKA], [test "x$enable_kafka" = "xyes"])
+
     AC_ARG_ENABLE(ja3,
            AS_HELP_STRING([--disable-ja3], [Disable JA3 support]),
            [enable_ja3="$enableval"],
@@ -2612,6 +2688,7 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   libjansson support:                      ${enable_jansson}
   hiredis support:                         ${enable_hiredis}
   hiredis async with libevent:             ${enable_hiredis_async}
+  Kafka support:                           ${enable_kafka}
   PCRE jit:                                ${pcre2_jit_available}
   GeoIP2 support:                          ${enable_geoip}
   JA3 support:                             ${enable_ja3}

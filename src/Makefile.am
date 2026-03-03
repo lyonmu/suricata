@@ -349,6 +349,7 @@ noinst_HEADERS = \
 	log-tcp-data.h \
 	log-tlsstore.h \
 	output-eve-bindgen.h \
+	output-eve-kafka.h \
 	output-eve-null.h \
 	output-eve-stream.h \
 	output-eve-syslog.h \
@@ -925,6 +926,7 @@ libsuricata_c_a_SOURCES = \
 	log-stats.c \
 	log-tcp-data.c \
 	log-tlsstore.c \
+	output-eve-kafka.c \
 	output-eve-null.c \
 	output-eve-stream.c \
 	output-eve-syslog.c \

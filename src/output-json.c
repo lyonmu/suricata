@@ -43,6 +43,9 @@
 /* Internal output plugins */
 #include "output-eve-syslog.h"
 #include "output-eve-null.h"
+#ifdef HAVE_LIBRDKAFKA
+#include "output-eve-kafka.h"
+#endif
 
 #include "output.h"
 #include "output-json.h"
@@ -91,6 +94,9 @@ void OutputJsonRegister (void)
     // API.
     SyslogInitialize();
     NullLogInitialize();
+#ifdef HAVE_LIBRDKAFKA
+    SCEveKafkaInitialize();
+#endif
 }
 
 json_t *SCJsonString(const char *val)
