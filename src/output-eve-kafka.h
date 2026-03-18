@@ -124,7 +124,7 @@ typedef struct SCEveKafkaContext_ {
     KafkaSetup setup;                /* Configuration (owned by this struct) */
     SCEveKafkaRingBuffer *ring_buffer;  /* Ring buffer for event queuing */
     pthread_t producer_thread;       /* Background producer thread */
-    int stop_flag;                   /* Thread stop signal (set to 1 to stop) */
+    SC_ATOMIC_DECLARE(int, stop_flag); /* Thread stop signal (set to 1 to stop) */
 
     /* Statistics - atomic for thread-safe updates */
     SC_ATOMIC_DECLARE(uint64_t, messages_sent);

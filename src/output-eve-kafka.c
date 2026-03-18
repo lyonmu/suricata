@@ -711,7 +711,7 @@ static void *KafkaProducerThread(void *arg)
 
     SCLogInfo("Kafka producer thread started");
 
-    while (!ctx->stop_flag) {
+    while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
         SCEveKafkaRingBufferEntry entry;
 
         /* Try to get message from ring buffer */
@@ -842,15 +842,15 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
         goto error;
     }
 
-    /* Initialize atomic statistics */
+    /* Initialize atomic statistics - must be done before thread starts */
     SC_ATOMIC_INIT(ctx->messages_sent);
     SC_ATOMIC_INIT(ctx->messages_failed);
     SC_ATOMIC_INIT(ctx->messages_dropped);
     SC_ATOMIC_INIT(ctx->bytes_sent);
     SC_ATOMIC_INIT(ctx->delivery_callback_count);
+    SC_ATOMIC_SET(ctx->stop_flag, 0);
 
     /* Start producer thread */
-    ctx->stop_flag = 0;
     if (pthread_create(&ctx->producer_thread, NULL, KafkaProducerThread, ctx) != 0) {
         SCLogError("Kafka: Failed to create producer thread");
         goto error;
@@ -885,7 +885,7 @@ static void KafkaDeinit(void *init_data)
     SCLogInfo("Kafka: Initiating shutdown...");
 
     /* Signal producer thread to stop */
-    ctx->stop_flag = 1;
+    SC_ATOMIC_SET(ctx->stop_flag, 1);
 
     /* Wait for producer thread to finish */
     pthread_join(ctx->producer_thread, NULL);
