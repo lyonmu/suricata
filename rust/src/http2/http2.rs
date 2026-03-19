@@ -79,6 +79,7 @@ pub static mut HTTP2_MAX_TABLESIZE: u32 = 65536; // 0x10000
                                                  // maximum size of reassembly for header + continuation
 static mut HTTP2_MAX_REASS: usize = 102400;
 static mut HTTP2_MAX_STREAMS: usize = 4096; // 0x1000
+static mut HTTP2_MAX_FRAMES: usize = 65536;
 
 #[derive(AppLayerFrameType)]
 pub enum Http2FrameType {
@@ -176,9 +177,6 @@ pub struct HTTP2Transaction {
     pub ft_tc: FileTransferTracker,
     pub ft_ts: FileTransferTracker,
 
-    //temporary escaped header for detection
-    //must be attached to transaction for memory management (be freed at the right time)
-    pub escaped: Vec<Vec<u8>>,
     pub req_line: Vec<u8>,
     pub resp_line: Vec<u8>,
 
@@ -211,7 +209,6 @@ impl HTTP2Transaction {
             tx_data: AppLayerTxData::new(),
             ft_tc: FileTransferTracker::new(),
             ft_ts: FileTransferTracker::new(),
-            escaped: Vec::with_capacity(16),
             req_line: Vec::new(),
             resp_line: Vec::new(),
             doh: None,
@@ -531,6 +528,7 @@ pub enum HTTP2Event {
     DnsRequestTooLong,
     DnsResponseTooLong,
     DataStreamZero,
+    TooManyFrames,
 }
 
 pub struct HTTP2DynTable {
@@ -1239,16 +1237,18 @@ impl HTTP2State {
                     let ftype = head.ftype;
                     let sid = head.stream_id;
                     let padded = head.flags & parser::HTTP2_FLAG_HEADER_PADDED != 0;
-                    if dir == Direction::ToServer {
-                        tx.frames_ts.push(HTTP2Frame {
+                    let h2frames = if dir == Direction::ToServer {
+                        &mut tx.frames_ts
+                    } else {
+                        &mut tx.frames_tc
+                    };
+                    if h2frames.len() < unsafe { HTTP2_MAX_FRAMES } {
+                        h2frames.push(HTTP2Frame {
                             header: head,
                             data: txdata,
                         });
                     } else {
-                        tx.frames_tc.push(HTTP2Frame {
-                            header: head,
-                            data: txdata,
-                        });
+                        tx.tx_data.set_event(HTTP2Event::TooManyFrames as u8);
                     }
                     if ftype == parser::HTTP2FrameType::Data as u8 && sid == 0 {
                         tx.tx_data.set_event(HTTP2Event::DataStreamZero as u8);
@@ -1580,6 +1580,13 @@ pub unsafe extern "C" fn SCRegisterHttp2Parser() {
                 HTTP2_MAX_STREAMS = v;
             } else {
                 SCLogError!("Invalid value for http2.max-streams");
+            }
+        }
+        if let Some(val) = conf_get("app-layer.protocols.http2.max-frames") {
+            if let Ok(v) = val.parse::<usize>() {
+                HTTP2_MAX_FRAMES = v;
+            } else {
+                SCLogError!("Invalid value for http2.max-frames");
             }
         }
         if let Some(val) = conf_get("app-layer.protocols.http2.max-table-size") {

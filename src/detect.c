@@ -112,7 +112,7 @@ static void DetectRun(ThreadVars *th_v,
         Packet *p)
 {
     SCEnter();
-    SCLogDebug("PcapPacketCntGet(p) %" PRIu64 " direction %s pkt_src %s", PcapPacketCntGet(p),
+    SCLogDebug("pcap_cnt %" PRIu64 " direction %s pkt_src %s", PcapPacketCntGet(p),
             p->flow ? (FlowGetPacketDirection(p->flow, p) == TOSERVER ? "toserver" : "toclient")
                     : "noflow",
             PktSrcToString(p->pkt_src));
@@ -212,7 +212,7 @@ static void DetectRunPacketHook(ThreadVars *th_v, const DetectEngineCtx *de_ctx,
         DetectEngineThreadCtx *det_ctx, const SigGroupHead *sgh, Packet *p)
 {
     SCEnter();
-    SCLogDebug("PcapPacketCntGet(p) %" PRIu64 " direction %s pkt_src %s", PcapPacketCntGet(p),
+    SCLogDebug("pcap_cnt %" PRIu64 " direction %s pkt_src %s", PcapPacketCntGet(p),
             p->flow ? (FlowGetPacketDirection(p->flow, p) == TOSERVER ? "toserver" : "toclient")
                     : "noflow",
             PktSrcToString(p->pkt_src));
@@ -793,12 +793,9 @@ static inline uint8_t DetectRulePacketRules(ThreadVars *const tv,
                 /* undo "prefetch" */
                 if (next_s)
                     match_array--;
-                /* create temporary rule pointer array starting
-                 * at where we are in the current match array */
-                const Signature *replace[de_ctx->sig_array_len]; // TODO heap?
                 SCLogDebug("sig_array_len %u det_ctx->pmq.rule_id_array_cnt %u",
                         de_ctx->sig_array_len, det_ctx->pmq.rule_id_array_cnt);
-                const Signature **r = replace;
+                const Signature **r = det_ctx->replace;
                 for (uint32_t x = 0; x < match_cnt; x++) {
                     *r++ = match_array[x];
                     SCLogDebug("appended %u", match_array[x]->id);
@@ -814,7 +811,7 @@ static inline uint8_t DetectRulePacketRules(ThreadVars *const tv,
                     }
                 }
                 if (match_cnt > 1) {
-                    qsort(replace, match_cnt, sizeof(Signature *), SortHelper);
+                    qsort(det_ctx->replace, match_cnt, sizeof(Signature *), SortHelper);
                 }
                 /* rewrite match_array to include the new additions, and deduplicate
                  * while at it. */
@@ -828,7 +825,7 @@ static inline uint8_t DetectRulePacketRules(ThreadVars *const tv,
                         continue;
                     }
                     last_sig = *m;
-                    *m++ = (Signature *)replace[x];
+                    *m++ = (Signature *)det_ctx->replace[x];
                 }
                 match_cnt -= skipped;
                 /* prefetch next */

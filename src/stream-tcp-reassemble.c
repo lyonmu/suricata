@@ -1581,8 +1581,8 @@ void StreamReassembleRawUpdateProgress(TcpSession *ssn, Packet *p, const uint64_
         stream->flags &= ~STREAMTCP_STREAM_FLAG_TRIGGER_RAW;
 
     } else {
-        SCLogDebug("PcapPacketCntGet(p) %" PRIu64 ": progress %" PRIu64 " app %" PRIu64
-                   " raw %" PRIu64 " tcp win %" PRIu32,
+        SCLogDebug("pcap_cnt %" PRIu64 ": progress %" PRIu64 " app %" PRIu64 " raw %" PRIu64
+                   " tcp win %" PRIu32,
                 PcapPacketCntGet(p), progress, STREAM_APP_PROGRESS(stream),
                 STREAM_RAW_PROGRESS(stream), stream->window);
     }
@@ -1878,6 +1878,12 @@ static int StreamReassembleRawDo(const TcpSession *ssn, const TcpStream *stream,
             progress = mydata_offset;
             SCLogDebug("raw progress now %"PRIu64, progress);
 
+            /* data is beyond the progress we'd like, and also beyond the last ack:
+             * there is a gap and we can't expect it to get filled anymore. */
+        } else if (mydata_offset > progress && mydata_offset == re) {
+            SCLogDebug("mydata_offset %" PRIu64 ", progress %" PRIu64 ", re %" PRIu64,
+                    mydata_offset, progress, re);
+            progress = re;
         } else {
             SCLogDebug("not increasing progress, data gap => mydata_offset "
                        "%"PRIu64" != progress %"PRIu64, mydata_offset, progress);

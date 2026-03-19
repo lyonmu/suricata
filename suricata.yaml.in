@@ -92,6 +92,8 @@ outputs:
       enabled: yes
       filename: fast.log
       append: yes
+      # Compress IPv6 addresses per RFC5952 as they are added to the fast log. The default is no.
+      # ipv6-compress: no
       #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
 
   # Extensible Event Format (nicknamed EVE) event log in JSON format
@@ -182,6 +184,9 @@ outputs:
 
       # include the name of the input pcap file in pcap file processing mode
       pcap-file: false
+
+      # Compress IPv6 addresses per RFC5952 as they are added to the eve-log. The default is no.
+      # ipv6-compress: no
 
       # Community Flow ID
       # Adds a 'community_id' field to EVE records. These are meant to give
@@ -374,6 +379,7 @@ outputs:
         - quic
         - ldap
         - pop3
+        #- modbus
         - arp:
             enabled: no        # Many events can be logged. Disabled by default
         - dhcp:
@@ -503,6 +509,8 @@ outputs:
       enabled: no
       filename: alert-debug.log
       append: yes
+      # Compress IPv6 addresses per RFC5952 as they are added to the alert log. The default is no.
+      # ipv6-compress: no
       #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
 
   # Stats.log contains data from various counters of the Suricata engine.
@@ -961,6 +969,8 @@ pcap-file:
 # The option "enabled" takes 3 values - "yes", "no", "detection-only".
 # "yes" enables both detection and the parser, "no" disables both, and
 # "detection-only" enables protocol detection only (parser disabled).
+# This option is first evaluated per carrier protocol e.g. sip.tcp.enabled will be
+# evaluated first and if it is not found then, sip.enabled will be checked.
 app-layer:
   # error-policy: ignore
   protocols:
@@ -1053,6 +1063,8 @@ app-layer:
       #max-table-size: 65536
       # Maximum reassembly size for header + continuation frames
       #max-reassembly-size: 102400
+      # Maximum number of frames per tx
+      #max-frames: 65536
     smtp:
       enabled: yes
       raw-extraction: no

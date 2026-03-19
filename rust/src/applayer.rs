@@ -39,13 +39,7 @@ pub use suricata_sys::sys::{
 #[cfg(not(test))]
 use suricata_sys::sys::SCAppLayerDecoderEventsSetEventRaw;
 
-/// Cast pointer to a variable, as a mutable reference to an object
-///
-/// UNSAFE !
-#[macro_export]
-macro_rules! cast_pointer {
-    ($ptr:ident, $ty:ty) => ( &mut *($ptr as *mut $ty) );
-}
+pub use suricata_ffi::cast_pointer;
 
 pub trait StreamSliceRust {
     #[cfg(test)]
@@ -336,14 +330,6 @@ pub struct RustParser {
 
     pub get_state_id_by_name: Option<GetStateIdByName>,
     pub get_state_name_by_id: Option<GetStateNameById>,
-}
-
-/// Create a slice, given a buffer and a length
-///
-/// UNSAFE !
-#[macro_export]
-macro_rules! build_slice {
-    ($buf:ident, $len:expr) => ( std::slice::from_raw_parts($buf, $len) );
 }
 
 pub trait AppLayerGetFileStateRust {

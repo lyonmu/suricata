@@ -1889,6 +1889,7 @@ static int SigParse(DetectEngineCtx *de_ctx, Signature *s, const char *sigstr,
     /* we can have no options, so make sure we have them */
     if (strlen(parser->opts) > 0) {
         size_t buffer_size = strlen(parser->opts) + 1;
+        DEBUG_VALIDATE_BUG_ON(buffer_size > DETECT_MAX_RULE_SIZE);
         char input[buffer_size];
         char output[buffer_size];
         memset(input, 0x00, buffer_size);
@@ -4808,52 +4809,30 @@ static int SigParseTestNegation01 (void)
  */
 static int SigParseTestNegation02 (void)
 {
-    int result = 0;
-    DetectEngineCtx *de_ctx;
-    Signature *s=NULL;
-
-    de_ctx = DetectEngineCtxInit();
-    if (de_ctx == NULL)
-        goto end;
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
     de_ctx->flags |= DE_QUIET;
-
-    s = SigInit(de_ctx,"alert tcp any !any -> any any (msg:\"SigTest41-02 src ip is !any \"; classtype:misc-activity; sid:410002; rev:1;)");
-    if (s != NULL) {
-        SigFree(de_ctx, s);
-        goto end;
-    }
-
-    result = 1;
-end:
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-    return result;
+    Signature *s = DetectEngineAppendSig(de_ctx,
+            "alert tcp any !any -> any any (msg:\"SigTest41-02 src ip is !any \"; "
+            "classtype:misc-activity; sid:410002; rev:1;)");
+    FAIL_IF_NOT_NULL(s);
+    DetectEngineCtxFree(de_ctx);
+    PASS;
 }
 /**
  * \test check that we don't allow invalid negation options
  */
 static int SigParseTestNegation03 (void)
 {
-    int result = 0;
-    DetectEngineCtx *de_ctx;
-    Signature *s=NULL;
-
-    de_ctx = DetectEngineCtxInit();
-    if (de_ctx == NULL)
-        goto end;
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+    FAIL_IF_NULL(de_ctx);
     de_ctx->flags |= DE_QUIET;
-
-    s = SigInit(de_ctx,"alert tcp any any -> any [80:!80] (msg:\"SigTest41-03 dst port [80:!80] \"; classtype:misc-activity; sid:410003; rev:1;)");
-    if (s != NULL) {
-        SigFree(de_ctx, s);
-        goto end;
-    }
-
-    result = 1;
-end:
-    if (de_ctx != NULL)
-        DetectEngineCtxFree(de_ctx);
-    return result;
+    Signature *s = DetectEngineAppendSig(de_ctx,
+            "alert tcp any any -> any [80:!80] (msg:\"SigTest41-03 dst port [80:!80] \"; "
+            "classtype:misc-activity; sid:410003; rev:1;)");
+    FAIL_IF_NOT_NULL(s);
+    DetectEngineCtxFree(de_ctx);
+    PASS;
 }
 /**
  * \test check that we don't allow invalid negation options
