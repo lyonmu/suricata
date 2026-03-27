@@ -231,10 +231,7 @@ static void EveAddPacketVars(const Packet *p, SCJsonBuilder *js_vars)
  */
 static bool SCStringHasPrefix(const char *s, const char *prefix)
 {
-    if (strncmp(s, prefix, strlen(prefix)) == 0) {
-        return true;
-    }
-    return false;
+    return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
 static void EveAddFlowVars(const Flow *f, SCJsonBuilder *js_root, SCJsonBuilder **js_traffic)
@@ -998,12 +995,6 @@ int OutputJSONBuffer(json_t *js, LogFileCtx *file_ctx, MemBuffer **buffer)
 
     LogFileWrite(file_ctx, *buffer);
     return 0;
-}
-
-void OutputJsonFlush(OutputJsonThreadCtx *ctx)
-{
-    LogFileCtx *file_ctx = ctx->file_ctx;
-    LogFileFlush(file_ctx);
 }
 
 void OutputJsonBuilderBuffer(

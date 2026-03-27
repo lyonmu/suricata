@@ -221,7 +221,6 @@ void PcapLogRegister(void)
 {
     OutputPacketLoggerFunctions output_logger_functions = {
         .LogFunc = PcapLog,
-        .FlushFunc = NULL,
         .ConditionFunc = PcapLogCondition,
         .ThreadInitFunc = PcapLogDataInit,
         .ThreadDeinitFunc = PcapLogDataDeinit,
@@ -259,10 +258,7 @@ static bool PcapLogCondition(ThreadVars *tv, void *thread_data, const Packet *p)
         return false;
     }
 
-    if (PacketIsTunnelChild(p)) {
-        return false;
-    }
-    return true;
+    return !PacketIsTunnelChild(p);
 }
 
 /**
