@@ -160,6 +160,7 @@ noinst_HEADERS = \
 	detect-engine-uint.h \
 	detect-engine.h \
 	detect-entropy.h \
+	detect-etherhdr.h \
 	detect-fast-pattern.h \
 	detect-file-data.h \
 	detect-file-hash-common.h \
@@ -742,6 +743,7 @@ libsuricata_c_a_SOURCES = \
 	detect-engine-uint.c \
 	detect-engine.c \
 	detect-entropy.c \
+	detect-etherhdr.c \
 	detect-fast-pattern.c \
 	detect-file-data.c \
 	detect-file-hash-common.c \
@@ -1171,6 +1173,7 @@ EXTRA_DIST = \
 	${PRIVATE_INCLUDES} \
 	tests/stream-tcp-inline.c \
 	tests/stream-tcp-list.c \
+	tests/detect-etherhdr.c \
 	tests/detect-ipv4hdr.c \
 	tests/detect-ipv6hdr.c \
 	tests/detect-tcphdr.c \
@@ -1229,6 +1232,12 @@ install-headers:
 	fi
 	if test -e ../rust/gen/rust-bindings.h; then \
 		$(INSTALL_DATA) ../rust/gen/rust-bindings.h "$(DESTDIR)${includedir}/suricata"; \
+	fi
+	if test -e ../rust/dist/rust-ffi.h; then \
+		$(INSTALL_DATA) ../rust/dist/rust-ffi.h "$(DESTDIR)${includedir}/suricata"; \
+	fi
+	if test -e ../rust/gen/rust-ffi.h; then \
+		$(INSTALL_DATA) ../rust/gen/rust-ffi.h "$(DESTDIR)${includedir}/suricata"; \
 	fi
 
 # Until we can remove autoconf.h from our headers, we need to to

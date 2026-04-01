@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2021 Open Information Security Foundation
+/* Copyright (C) 2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -17,30 +17,11 @@
 
 /**
  * \file
- *
- * \author Victor Julien <victor@inliniac.net>
- *
- * IPPair wrapper around storage api
  */
 
-#ifndef SURICATA_IPPAIR_STORAGE_H
-#define SURICATA_IPPAIR_STORAGE_H
+#ifndef SURICATA_DETECT_ETHERHDR_H
+#define SURICATA_DETECT_ETHERHDR_H
 
-#include "ippair.h"
+void DetectEtherhdrRegister(void);
 
-typedef struct IPPairStorageId {
-    int id;
-} IPPairStorageId;
-
-unsigned int IPPairStorageSize(void);
-
-void *IPPairGetStorageById(IPPair *h, IPPairStorageId id);
-int IPPairSetStorageById(IPPair *h, IPPairStorageId id, void *ptr);
-
-void IPPairFreeStorage(IPPair *h);
-
-void RegisterIPPairStorageTests(void);
-
-IPPairStorageId IPPairStorageRegister(const char *name, void (*Free)(void *));
-
-#endif /* SURICATA_IPPAIR_STORAGE_H */
+#endif /* SURICATA_DETECT_ETHERHDR_H */

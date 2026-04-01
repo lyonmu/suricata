@@ -47,8 +47,6 @@ unsigned int HostStorageSize(void)
  * \brief Register a Host storage
  *
  * \param name the name of the storage
- * \param size integer coding the size of the stored value (sizeof(void *) is best choice here)
- * \param Alloc allocation function for the storage (can be null)
  * \param Free free function for the new storage
  *
  * \retval The ID of the newly register storage that will be used to access data
@@ -56,10 +54,9 @@ unsigned int HostStorageSize(void)
  * It has to be called once during the init of the sub system
  */
 
-HostStorageId HostStorageRegister(const char *name, const unsigned int size,
-        void *(*Alloc)(unsigned int), void (*Free)(void *))
+HostStorageId HostStorageRegister(const char *name, void (*Free)(void *))
 {
-    int id = StorageRegister(STORAGE_HOST, name, size, Alloc, Free);
+    int id = StorageRegister(STORAGE_HOST, name, Free);
     HostStorageId hsi = { .id = id };
     return hsi;
 }
@@ -96,11 +93,6 @@ void *HostGetStorageById(Host *h, HostStorageId id)
 
 /* Start of "private" function */
 
-void *HostAllocStorageById(Host *h, HostStorageId id)
-{
-    return StorageAllocByIdPrealloc(h->storage, STORAGE_HOST, id.id);
-}
-
 void HostFreeStorage(Host *h)
 {
     if (HostStorageSize() > 0)
@@ -110,11 +102,6 @@ void HostFreeStorage(Host *h)
 
 #ifdef UNITTESTS
 
-static void *StorageTestAlloc(unsigned int size)
-{
-    void *x = SCMalloc(size);
-    return x;
-}
 static void StorageTestFree(void *x)
 {
     if (x)
@@ -126,19 +113,14 @@ static int HostStorageTest01(void)
     StorageCleanup();
     StorageInit();
 
-    HostStorageId id1 = HostStorageRegister("test", 8, StorageTestAlloc, StorageTestFree);
-    if (id1.id < 0)
-        goto error;
-    HostStorageId id2 = HostStorageRegister("variable", 24, StorageTestAlloc, StorageTestFree);
-    if (id2.id < 0)
-        goto error;
-    HostStorageId id3 =
-            HostStorageRegister("store", sizeof(void *), StorageTestAlloc, StorageTestFree);
-    if (id3.id < 0)
-        goto error;
+    HostStorageId id1 = HostStorageRegister("test", StorageTestFree);
+    FAIL_IF(id1.id < 0);
+    HostStorageId id2 = HostStorageRegister("variable", StorageTestFree);
+    FAIL_IF(id2.id < 0);
+    HostStorageId id3 = HostStorageRegister("store", StorageTestFree);
+    FAIL_IF(id3.id < 0);
 
-    if (StorageFinalize() < 0)
-        goto error;
+    FAIL_IF(StorageFinalize() < 0);
 
     HostInitConfig(1);
 
@@ -147,59 +129,37 @@ static int HostStorageTest01(void)
     a.addr_data32[0] = 0x01020304;
     a.family = AF_INET;
     Host *h = HostGetHostFromHash(&a);
-    if (h == NULL) {
-        printf("failed to get host: ");
-        goto error;
-    }
+    FAIL_IF_NULL(h);
 
     void *ptr = HostGetStorageById(h, id1);
-    if (ptr != NULL) {
-        goto error;
-    }
+    FAIL_IF_NOT_NULL(ptr);
     ptr = HostGetStorageById(h, id2);
-    if (ptr != NULL) {
-        goto error;
-    }
+    FAIL_IF_NOT_NULL(ptr);
     ptr = HostGetStorageById(h, id3);
-    if (ptr != NULL) {
-        goto error;
-    }
+    FAIL_IF_NOT_NULL(ptr);
 
-    void *ptr1a = HostAllocStorageById(h, id1);
-    if (ptr1a == NULL) {
-        goto error;
-    }
-    void *ptr2a = HostAllocStorageById(h, id2);
-    if (ptr2a == NULL) {
-        goto error;
-    }
-    void *ptr3a = HostAllocStorageById(h, id3);
-    if (ptr3a == NULL) {
-        goto error;
-    }
+    void *ptr1a = SCMalloc(8);
+    FAIL_IF_NULL(ptr1a);
+    FAIL_IF(HostSetStorageById(h, id1, ptr1a) != 0);
+    void *ptr2a = SCMalloc(24);
+    FAIL_IF_NULL(ptr2a);
+    FAIL_IF(HostSetStorageById(h, id2, ptr2a) != 0);
+    void *ptr3a = SCMalloc(16);
+    FAIL_IF_NULL(ptr3a);
+    FAIL_IF(HostSetStorageById(h, id3, ptr3a) != 0);
 
     void *ptr1b = HostGetStorageById(h, id1);
-    if (ptr1a != ptr1b) {
-        goto error;
-    }
+    FAIL_IF(ptr1a != ptr1b);
     void *ptr2b = HostGetStorageById(h, id2);
-    if (ptr2a != ptr2b) {
-        goto error;
-    }
+    FAIL_IF(ptr2a != ptr2b);
     void *ptr3b = HostGetStorageById(h, id3);
-    if (ptr3a != ptr3b) {
-        goto error;
-    }
+    FAIL_IF(ptr3a != ptr3b);
 
     HostRelease(h);
 
     HostShutdown();
     StorageCleanup();
-    return 1;
-error:
-    HostShutdown();
-    StorageCleanup();
-    return 0;
+    PASS;
 }
 
 static int HostStorageTest02(void)
@@ -207,12 +167,10 @@ static int HostStorageTest02(void)
     StorageCleanup();
     StorageInit();
 
-    HostStorageId id1 = HostStorageRegister("test", sizeof(void *), NULL, StorageTestFree);
-    if (id1.id < 0)
-        goto error;
+    HostStorageId id1 = HostStorageRegister("test", StorageTestFree);
+    FAIL_IF(id1.id < 0);
 
-    if (StorageFinalize() < 0)
-        goto error;
+    FAIL_IF(StorageFinalize() < 0);
 
     HostInitConfig(1);
 
@@ -221,36 +179,23 @@ static int HostStorageTest02(void)
     a.addr_data32[0] = 0x01020304;
     a.family = AF_INET;
     Host *h = HostGetHostFromHash(&a);
-    if (h == NULL) {
-        printf("failed to get host: ");
-        goto error;
-    }
+    FAIL_IF_NULL(h);
 
     void *ptr = HostGetStorageById(h, id1);
-    if (ptr != NULL) {
-        goto error;
-    }
+    FAIL_IF_NOT_NULL(ptr);
 
     void *ptr1a = SCMalloc(128);
-    if (unlikely(ptr1a == NULL)) {
-        goto error;
-    }
+    FAIL_IF_NULL(ptr1a);
     HostSetStorageById(h, id1, ptr1a);
 
     void *ptr1b = HostGetStorageById(h, id1);
-    if (ptr1a != ptr1b) {
-        goto error;
-    }
+    FAIL_IF(ptr1a != ptr1b);
 
     HostRelease(h);
 
     HostShutdown();
     StorageCleanup();
-    return 1;
-error:
-    HostShutdown();
-    StorageCleanup();
-    return 0;
+    PASS;
 }
 
 static int HostStorageTest03(void)
@@ -258,18 +203,14 @@ static int HostStorageTest03(void)
     StorageCleanup();
     StorageInit();
 
-    HostStorageId id1 = HostStorageRegister("test1", sizeof(void *), NULL, StorageTestFree);
-    if (id1.id < 0)
-        goto error;
-    HostStorageId id2 = HostStorageRegister("test2", sizeof(void *), NULL, StorageTestFree);
-    if (id2.id < 0)
-        goto error;
-    HostStorageId id3 = HostStorageRegister("test3", 32, StorageTestAlloc, StorageTestFree);
-    if (id3.id < 0)
-        goto error;
+    HostStorageId id1 = HostStorageRegister("test1", StorageTestFree);
+    FAIL_IF(id1.id < 0);
+    HostStorageId id2 = HostStorageRegister("test2", StorageTestFree);
+    FAIL_IF(id2.id < 0);
+    HostStorageId id3 = HostStorageRegister("test3", StorageTestFree);
+    FAIL_IF(id3.id < 0);
 
-    if (StorageFinalize() < 0)
-        goto error;
+    FAIL_IF(StorageFinalize() < 0);
 
     HostInitConfig(1);
 
@@ -278,55 +219,35 @@ static int HostStorageTest03(void)
     a.addr_data32[0] = 0x01020304;
     a.family = AF_INET;
     Host *h = HostGetHostFromHash(&a);
-    if (h == NULL) {
-        printf("failed to get host: ");
-        goto error;
-    }
+    FAIL_IF_NULL(h);
 
     void *ptr = HostGetStorageById(h, id1);
-    if (ptr != NULL) {
-        goto error;
-    }
+    FAIL_IF_NOT_NULL(ptr);
 
     void *ptr1a = SCMalloc(128);
-    if (unlikely(ptr1a == NULL)) {
-        goto error;
-    }
+    FAIL_IF_NULL(ptr1a);
     HostSetStorageById(h, id1, ptr1a);
 
     void *ptr2a = SCMalloc(256);
-    if (unlikely(ptr2a == NULL)) {
-        goto error;
-    }
+    FAIL_IF_NULL(ptr2a);
     HostSetStorageById(h, id2, ptr2a);
 
-    void *ptr3a = HostAllocStorageById(h, id3);
-    if (ptr3a == NULL) {
-        goto error;
-    }
+    void *ptr3a = SCMalloc(32);
+    FAIL_IF_NULL(ptr3a);
+    HostSetStorageById(h, id3, ptr3a);
 
     void *ptr1b = HostGetStorageById(h, id1);
-    if (ptr1a != ptr1b) {
-        goto error;
-    }
+    FAIL_IF(ptr1a != ptr1b);
     void *ptr2b = HostGetStorageById(h, id2);
-    if (ptr2a != ptr2b) {
-        goto error;
-    }
+    FAIL_IF(ptr2a != ptr2b);
     void *ptr3b = HostGetStorageById(h, id3);
-    if (ptr3a != ptr3b) {
-        goto error;
-    }
+    FAIL_IF(ptr3a != ptr3b);
 
     HostRelease(h);
 
     HostShutdown();
     StorageCleanup();
-    return 1;
-error:
-    HostShutdown();
-    StorageCleanup();
-    return 0;
+    PASS;
 }
 #endif
 

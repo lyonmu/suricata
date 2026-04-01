@@ -73,12 +73,7 @@ documentation_style = "doxy"
 #
 # default: []
 include = [
-    "RdpState",
-    "SIPState",
     "ModbusState",
-    "CMark",
-    "QuicState",
-    "QuicTransaction",
     "FtpEvent",
     "FtpRequestCommand",
     "FtpStateValues",
@@ -91,10 +86,6 @@ include = [
 # default: []
 exclude = [
     "CLuaState",
-    "FileContainer",
-    "HttpRangeContainerBlock",
-    "IPPROTO_TCP",
-    "IPPROTO_UDP",
     "SIGMATCH_NOOPT",
     "SIGMATCH_INFO_STICKY_BUFFER",
     "SIGMATCH_INFO_MULTI_BUFFER",

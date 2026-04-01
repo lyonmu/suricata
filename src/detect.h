@@ -292,6 +292,7 @@ typedef struct DetectPort_ {
 #define SIG_FLAG_INIT_BIDIREC               BIT_U32(3)  /**< signature has bidirectional operator */
 #define SIG_FLAG_INIT_FIRST_IPPROTO_SEEN                                                           \
     BIT_U32(4) /** < signature has seen the first ip_proto keyword */
+#define SIG_FLAG_INIT_FRAME BIT_U32(5)                  /**< signature uses frames */
 #define SIG_FLAG_INIT_STATE_MATCH           BIT_U32(6)  /**< signature has matches that require stateful inspection */
 #define SIG_FLAG_INIT_NEED_FLUSH            BIT_U32(7)
 #define SIG_FLAG_INIT_PRIO_EXPLICIT                                                                \
@@ -630,6 +631,9 @@ typedef struct SignatureInitData_ {
 
     DetectEngineTransforms transforms;
 
+    /** rule protocol settings */
+    DetectProto proto;
+
     /** score to influence rule grouping. A higher value leads to a higher
      *  likelihood of a rulegroup with this sig ending up as a contained
      *  group. */
@@ -683,8 +687,8 @@ typedef struct Signature_ {
     uint8_t action;
     uint8_t file_flags;
 
-    /** addresses, ports and proto this sig matches on */
-    DetectProto proto;
+    /** rule protocol: can be NULL if the check can be skipped */
+    DetectProto *proto;
 
     /* scope setting for the action: enum ActionScope */
     uint8_t action_scope;
@@ -1016,6 +1020,9 @@ typedef struct DetectEngineCtx_ {
     /** sgh for signatures that match against invalid packets. In those cases
      *  we can't lookup by proto, address, port as we don't have these */
     struct SigGroupHead_ *decoder_event_sgh;
+
+    /** sgh for `alert ether` / `alert arp` etc. */
+    struct SigGroupHead_ *eth_non_ip_sgh;
 
     /* Maximum size of the buffer for decoded base64 data. */
     uint16_t base64_decode_max_len;
