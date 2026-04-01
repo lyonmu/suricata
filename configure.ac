@@ -1983,7 +1983,7 @@
 
     if test "$enable_kafka" = "yes"; then
         # Try pkg-config first (preferred method)
-        PKG_CHECK_MODULES([RDKAFKA], [rdkafka >= 1.0.0],
+        PKG_CHECK_MODULES([RDKAFKA], [rdkafka >= 2.3.0],
             [have_rdkafka_pkgconfig="yes"],
             [have_rdkafka_pkgconfig="no"])
 
@@ -2005,6 +2005,18 @@
                 [HAVE_LIBRDKAFKA_H="no"])
 
             if test "$HAVE_LIBRDKAFKA_H" = "yes"; then
+                AC_MSG_CHECKING([for librdkafka version >= 2.3.0])
+                AC_COMPILE_IFELSE(
+                    [AC_LANG_PROGRAM([[
+                        #include <librdkafka/rdkafka.h>
+                        #if RD_KAFKA_VERSION < 0x020300ff
+                        #error librdkafka too old
+                        #endif
+                    ]], [[]])],
+                    [HAVE_LIBRDKAFKA_VERSION="yes"],
+                    [HAVE_LIBRDKAFKA_VERSION="no"])
+                AC_MSG_RESULT([$HAVE_LIBRDKAFKA_VERSION])
+
                 if test "$with_librdkafka_libraries" != "no"; then
                     LDFLAGS="${LDFLAGS} -L${with_librdkafka_libraries}"
                 fi
@@ -2015,14 +2027,14 @@
                     [HAVE_LIBRDKAFKA_LIB="no"])
             fi
 
-            if test "$HAVE_LIBRDKAFKA_H" = "yes" && test "$HAVE_LIBRDKAFKA_LIB" = "yes"; then
+            if test "$HAVE_LIBRDKAFKA_H" = "yes" && test "$HAVE_LIBRDKAFKA_VERSION" = "yes" && test "$HAVE_LIBRDKAFKA_LIB" = "yes"; then
                 AC_DEFINE([HAVE_LIBRDKAFKA], [1], [librdkafka available])
                 enable_kafka="yes"
                 LIBS="${LIBS} -lrdkafka"
                 AC_MSG_NOTICE([librdkafka support enabled (manual detection)])
             else
                 echo
-                echo "   ERROR: librdkafka not found."
+                echo "   ERROR: librdkafka >= 2.3.0 not found."
                 echo "   Install librdkafka-dev (Debian/Ubuntu) or librdkafka-devel (RHEL/Fedora)"
                 echo
                 echo "   Ubuntu/Debian:"

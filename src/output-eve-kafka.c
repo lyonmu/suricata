@@ -43,12 +43,46 @@
 
 #include <librdkafka/rdkafka.h>
 
+#if RD_KAFKA_VERSION < 0x020300ff
+#error "Kafka EVE output requires librdkafka >= 2.3.0"
+#endif
+
 #define OUTPUT_NAME "kafka"
 
 /* Forward declarations */
 static void *KafkaProducerThread(void *arg);
 static void KafkaDeliveryReportCallback(rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque);
 static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, const char *buf);
+static void KafkaFreeConfig(KafkaSetup *setup);
+
+static int KafkaDupString(const char *src, char **dst, const char *name)
+{
+    *dst = SCStrdup(src);
+    if (*dst == NULL) {
+        SCLogError("Kafka: failed to allocate memory for %s", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int KafkaValidateInt(const char *name, const intmax_t value, const intmax_t min)
+{
+    if (value < min) {
+        SCLogError("Kafka: invalid value for %s: %" PRIdMAX " (must be >= %" PRIdMAX ")",
+                name, value, min);
+        return -1;
+    }
+    return 0;
+}
+
+static int KafkaValidateIntGreaterThanZero(const char *name, const intmax_t value)
+{
+    if (value <= 0) {
+        SCLogError("Kafka: invalid value for %s: %" PRIdMAX " (must be > 0)", name, value);
+        return -1;
+    }
+    return 0;
+}
 
 /**
  * \brief Initialize ring buffer with specified size
@@ -186,18 +220,24 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
         SCLogError("Kafka: 'brokers' configuration required");
         return -1;
     }
-    setup->brokers = SCStrdup(val);
+    if (KafkaDupString(val, &setup->brokers, "brokers") != 0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "topic");
     if (val == NULL) {
         SCLogError("Kafka: 'topic' configuration required");
-        return -1;
+        goto error;
     }
-    setup->topic = SCStrdup(val);
+    if (KafkaDupString(val, &setup->topic, "topic") != 0) {
+        goto error;
+    }
 
     /* Optional settings with defaults */
     val = SCConfNodeLookupChildValue(conf, "client-id");
-    setup->client_id = val ? SCStrdup(val) : SCStrdup("suricata");
+    if (KafkaDupString(val ? val : "suricata", &setup->client_id, "client-id") != 0) {
+        goto error;
+    }
 
     /* Compression */
     val = SCConfNodeLookupChildValue(conf, "compression");
@@ -255,30 +295,57 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
     /* Parse optional overrides */
     intmax_t intval;
     if (SCConfGetChildValueInt(conf, "partition", &intval)) {
+        if (KafkaValidateInt("partition", intval, -1) != 0) {
+            goto error;
+        }
         setup->partition = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "ring-buffer-size", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("ring-buffer-size", intval) != 0) {
+            goto error;
+        }
         setup->ring_buffer_size = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "queue-buffering-max-messages", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("queue-buffering-max-messages", intval) != 0) {
+            goto error;
+        }
         setup->queue_buffering_max_messages = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "queue-buffering-max-kbytes", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("queue-buffering-max-kbytes", intval) != 0) {
+            goto error;
+        }
         setup->queue_buffering_max_kbytes = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "message-timeout-ms", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("message-timeout-ms", intval) != 0) {
+            goto error;
+        }
         setup->message_timeout_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "socket-timeout-ms", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("socket-timeout-ms", intval) != 0) {
+            goto error;
+        }
         setup->socket_timeout_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "metadata-max-age-ms", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("metadata-max-age-ms", intval) != 0) {
+            goto error;
+        }
         setup->metadata_max_age_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "retry-backoff-ms", &intval)) {
+        if (KafkaValidateInt("retry-backoff-ms", intval, 0) != 0) {
+            goto error;
+        }
         setup->retry_backoff_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "linger-ms", &intval)) {
+        if (KafkaValidateInt("linger-ms", intval, 0) != 0) {
+            goto error;
+        }
         setup->linger_ms = (int)intval;
     }
 
@@ -300,28 +367,49 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
 
     /* SSL settings */
     val = SCConfNodeLookupChildValue(conf, "ssl-ca-location");
-    if (val != NULL) setup->ssl_ca_location = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->ssl_ca_location, "ssl-ca-location") != 0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "ssl-certificate-location");
-    if (val != NULL) setup->ssl_certificate_location = SCStrdup(val);
+    if (val != NULL &&
+            KafkaDupString(val, &setup->ssl_certificate_location, "ssl-certificate-location") !=
+                    0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "ssl-key-location");
-    if (val != NULL) setup->ssl_key_location = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->ssl_key_location, "ssl-key-location") != 0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "ssl-key-password");
-    if (val != NULL) setup->ssl_key_password = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->ssl_key_password, "ssl-key-password") != 0) {
+        goto error;
+    }
 
     /* SASL settings */
     val = SCConfNodeLookupChildValue(conf, "sasl-mechanism");
-    if (val != NULL) setup->sasl_mechanism = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->sasl_mechanism, "sasl-mechanism") != 0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "sasl-username");
-    if (val != NULL) setup->sasl_username = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->sasl_username, "sasl-username") != 0) {
+        goto error;
+    }
 
     val = SCConfNodeLookupChildValue(conf, "sasl-password");
-    if (val != NULL) setup->sasl_password = SCStrdup(val);
+    if (val != NULL && KafkaDupString(val, &setup->sasl_password, "sasl-password") != 0) {
+        goto error;
+    }
 
     return 0;
+
+error:
+    KafkaFreeConfig(setup);
+    memset(setup, 0, sizeof(*setup));
+    return -1;
 }
 
 /**
@@ -621,7 +709,7 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
               topic_name, partition_count);
 
     /* Create topic specification */
-    /* Use -1 for replication_factor to let broker use default (librdkafka 2.4.0+) */
+    /* Use -1 for replication_factor to let broker use default. */
     new_topic = rd_kafka_NewTopic_new(topic_name, partition_count, -1,
                                       errstr, sizeof(errstr));
     if (new_topic == NULL) {
@@ -959,6 +1047,24 @@ static void KafkaThreadDeinit(const void *init_data, void *thread_data)
 
 #ifdef UNITTESTS
 
+static SCConfNode *KafkaTestCreateBaseConfig(void)
+{
+    SCConfCreateContextBackup();
+    SCConfInit();
+
+    FAIL_IF_NOT(SCConfSet("kafka.brokers", "127.0.0.1:9092"));
+    FAIL_IF_NOT(SCConfSet("kafka.topic", "eve"));
+
+    return SCConfGetNode("kafka");
+}
+
+static void KafkaTestDestroyBaseConfig(KafkaSetup *setup)
+{
+    KafkaFreeConfig(setup);
+    SCConfDeInit();
+    SCConfRestoreContextBackup();
+}
+
 static int KafkaTestRingBufferBasic(void)
 {
     SCEveKafkaRingBuffer *rb = RingBufferInit(16);
@@ -1017,6 +1123,46 @@ static int KafkaTestRingBufferOverflow(void)
     PASS;
 }
 
+static int KafkaTestParseConfigInvalidRingBufferSize(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.ring-buffer-size", "0"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigInvalidPartition(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.partition", "-2"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigValidRetryBackoffZero(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.retry-backoff-ms", "0"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
+    FAIL_IF(setup.retry_backoff_ms != 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1048,6 +1194,11 @@ void SCEveKafkaInitialize(void)
 #ifdef UNITTESTS
     UtRegisterTest("KafkaTestRingBufferBasic", KafkaTestRingBufferBasic);
     UtRegisterTest("KafkaTestRingBufferOverflow", KafkaTestRingBufferOverflow);
+    UtRegisterTest("KafkaTestParseConfigInvalidRingBufferSize",
+            KafkaTestParseConfigInvalidRingBufferSize);
+    UtRegisterTest("KafkaTestParseConfigInvalidPartition", KafkaTestParseConfigInvalidPartition);
+    UtRegisterTest("KafkaTestParseConfigValidRetryBackoffZero",
+            KafkaTestParseConfigValidRetryBackoffZero);
 #endif
 }
 
