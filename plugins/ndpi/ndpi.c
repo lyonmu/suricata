@@ -33,8 +33,8 @@
 
 #include "ndpi_api.h"
 
-static ThreadStorageId thread_storage_id = { .id = -1 };
-static FlowStorageId flow_storage_id = { .id = -1 };
+static SCThreadStorageId thread_storage_id = { .id = -1 };
+static SCFlowStorageId flow_storage_id = { .id = -1 };
 static int ndpi_protocol_keyword_id = -1;
 static int ndpi_risk_keyword_id = -1;
 
@@ -66,20 +66,20 @@ static inline struct NdpiThreadContext *NdpiGetThreadContext(ThreadVars *tv)
 {
     if (unlikely(tv == NULL || thread_storage_id.id < 0))
         return NULL;
-    return ThreadGetStorageById(tv, thread_storage_id);
+    return SCThreadGetStorageById(tv, thread_storage_id);
 }
 
 /**
  * Safe helper to get nDPI flow context. Returns NULL if the flow
  * or its storage is not available. Guards against the case where
  * f->storage is NULL (uninitialized flow) which would crash inside
- * StorageGetById.
+ * SCStorageGetById.
  */
 static inline struct NdpiFlowContext *NdpiGetFlowContext(const Flow *f)
 {
     if (unlikely(f == NULL || flow_storage_id.id < 0 || f->storage == NULL))
         return NULL;
-    return FlowGetStorageById(f, flow_storage_id);
+    return SCFlowGetStorageById(f, flow_storage_id);
 }
 
 static void ThreadStorageFree(void *ptr)
@@ -128,7 +128,7 @@ static void OnFlowInit(ThreadVars *tv, Flow *f, const Packet *p, void *_data)
 
     memset(flowctx->ndpi_flow, 0, SIZEOF_FLOW_STRUCT);
     flowctx->detection_completed = false;
-    FlowSetStorageById(f, flow_storage_id, flowctx);
+    SCFlowSetStorageById(f, flow_storage_id, flowctx);
 }
 
 static void OnFlowUpdate(ThreadVars *tv, Flow *f, Packet *p, void *_data)
@@ -217,7 +217,7 @@ static void OnThreadInit(ThreadVars *tv, void *_data)
     NDPI_BITMASK_SET_ALL(protos);
     ndpi_set_protocol_detection_bitmask2(context->ndpi, &protos);
     ndpi_finalize_initialization(context->ndpi);
-    ThreadSetStorageById(tv, thread_storage_id, context);
+    SCThreadSetStorageById(tv, thread_storage_id, context);
 }
 
 static int DetectnDPIProtocolPacketMatch(
@@ -573,13 +573,13 @@ static void NdpiInit(void)
     SCLogDebug("Initializing nDPI plugin");
 
     /* Register thread storage. */
-    thread_storage_id = ThreadStorageRegister("ndpi", ThreadStorageFree);
+    thread_storage_id = SCThreadStorageRegister("ndpi", ThreadStorageFree);
     if (thread_storage_id.id < 0) {
         FatalError("Failed to register nDPI thread storage");
     }
 
     /* Register flow storage. */
-    flow_storage_id = FlowStorageRegister("ndpi", FlowStorageFree);
+    flow_storage_id = SCFlowStorageRegister("ndpi", FlowStorageFree);
     if (flow_storage_id.id < 0) {
         FatalError("Failed to register nDPI flow storage");
     }

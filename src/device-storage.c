@@ -29,9 +29,9 @@
 #include "util-storage.h"
 #include "util-unittest.h"
 
-unsigned int LiveDevStorageSize(void)
+unsigned int SCLiveDevStorageSize(void)
 {
-    return StorageGetSize(STORAGE_DEVICE);
+    return SCStorageGetSize(STORAGE_DEVICE);
 }
 
 /** \defgroup devicestorage Device storage API
@@ -39,9 +39,9 @@ unsigned int LiveDevStorageSize(void)
  * The device storage API is a per-device storage. It is a mean to extend
  * the LiveDevice structure with arbitrary data.
  *
- * You have first to register the storage via LiveDevStorageRegister() during
- * the init of your module. Then you can attach data via LiveDevSetStorageById()
- * and access them via LiveDevGetStorageById().
+ * You have first to register the storage via SCLiveDevStorageRegister() during
+ * the init of your module. Then you can attach data via SCLiveDevSetStorageById()
+ * and access them via SCLiveDevGetStorageById().
  * @{
  */
 
@@ -56,10 +56,10 @@ unsigned int LiveDevStorageSize(void)
  * It has to be called once during the init of the sub system
  */
 
-LiveDevStorageId LiveDevStorageRegister(const char *name, void (*Free)(void *))
+SCLiveDevStorageId SCLiveDevStorageRegister(const char *name, void (*Free)(void *))
 {
-    int id = StorageRegister(STORAGE_DEVICE, name, Free);
-    LiveDevStorageId ldsi = { .id = id };
+    int id = SCStorageRegister(STORAGE_DEVICE, name, Free);
+    SCLiveDevStorageId ldsi = { .id = id };
     return ldsi;
 }
 
@@ -67,26 +67,26 @@ LiveDevStorageId LiveDevStorageRegister(const char *name, void (*Free)(void *))
  * \brief Store a pointer in a given LiveDevice storage
  *
  * \param d a pointer to the LiveDevice
- * \param id the id of the storage (return of HostStorageRegister() call)
+ * \param id the id of the storage (return of SCHostStorageRegister() call)
  * \param ptr pointer to the data to store
  */
 
-int LiveDevSetStorageById(LiveDevice *d, LiveDevStorageId id, void *ptr)
+int SCLiveDevSetStorageById(LiveDevice *d, SCLiveDevStorageId id, void *ptr)
 {
-    return StorageSetById(d->storage, STORAGE_DEVICE, id.id, ptr);
+    return SCStorageSetById(d->storage, STORAGE_DEVICE, id.id, ptr);
 }
 
 /**
  * \brief Get a value from a given LiveDevice storage
  *
  * \param d a pointer to the LiveDevice
- * \param id the id of the storage (return of LiveDevStorageRegister() call)
+ * \param id the id of the storage (return of SCLiveDevStorageRegister() call)
  *
  */
 
-void *LiveDevGetStorageById(LiveDevice *d, LiveDevStorageId id)
+void *SCLiveDevGetStorageById(LiveDevice *d, SCLiveDevStorageId id)
 {
-    return StorageGetById(d->storage, STORAGE_DEVICE, id.id);
+    return SCStorageGetById(d->storage, STORAGE_DEVICE, id.id);
 }
 
 /**
@@ -95,10 +95,10 @@ void *LiveDevGetStorageById(LiveDevice *d, LiveDevStorageId id)
 
 /* Start of "private" function */
 
-void LiveDevFreeStorage(LiveDevice *d)
+void SCLiveDevFreeStorage(LiveDevice *d)
 {
-    if (LiveDevStorageSize() > 0)
-        StorageFreeAll(d->storage, STORAGE_DEVICE);
+    if (SCLiveDevStorageSize() > 0)
+        SCStorageFreeAll(d->storage, STORAGE_DEVICE);
 }
 
 

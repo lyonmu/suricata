@@ -46,18 +46,18 @@
 SC_ATOMIC_DECLARE(unsigned int, num_tags);  /**< Atomic counter, to know if we
                                                  have tagged hosts/sessions,
                                                  to avoid locking */
-static HostStorageId host_tag_id = { .id = -1 }; /**< Host storage id for tags */
-static FlowStorageId flow_tag_id = { .id = -1 }; /**< Flow storage id for tags */
+static SCHostStorageId host_tag_id = { .id = -1 }; /**< Host storage id for tags */
+static SCFlowStorageId flow_tag_id = { .id = -1 }; /**< Flow storage id for tags */
 
 void TagInitCtx(void)
 {
     SC_ATOMIC_INIT(num_tags);
 
-    host_tag_id = HostStorageRegister("tag", DetectTagDataListFree);
+    host_tag_id = SCHostStorageRegister("tag", DetectTagDataListFree);
     if (host_tag_id.id == -1) {
         FatalError("Can't initiate host storage for tag");
     }
-    flow_tag_id = FlowStorageRegister("tag", DetectTagDataListFree);
+    flow_tag_id = SCFlowStorageRegister("tag", DetectTagDataListFree);
     if (flow_tag_id.id == -1) {
         FatalError("Can't initiate flow storage for tag");
     }
@@ -78,7 +78,7 @@ void TagDestroyCtx(void)
 
 int TagHostHasTag(Host *host)
 {
-    return HostGetStorageById(host, host_tag_id) ? 1 : 0;
+    return SCHostGetStorageById(host, host_tag_id) ? 1 : 0;
 }
 
 static DetectTagDataEntry *DetectTagDataCopy(DetectTagDataEntry *dtd)
@@ -121,7 +121,7 @@ int TagFlowAdd(Packet *p, DetectTagDataEntry *tde)
     if (p->flow == NULL)
         return 1;
 
-    iter = FlowGetStorageById(p->flow, flow_tag_id);
+    iter = SCFlowGetStorageById(p->flow, flow_tag_id);
     if (iter != NULL) {
         /* First iterate installed entries searching a duplicated sid/gid */
         for (; iter != NULL; iter = iter->next) {
@@ -148,8 +148,8 @@ int TagFlowAdd(Packet *p, DetectTagDataEntry *tde)
     if (updated == 0 && tag_cnt < DETECT_TAG_MAX_TAGS) {
         DetectTagDataEntry *new_tde = DetectTagDataCopy(tde);
         if (new_tde != NULL) {
-            new_tde->next = FlowGetStorageById(p->flow, flow_tag_id);
-            FlowSetStorageById(p->flow, flow_tag_id, new_tde);
+            new_tde->next = SCFlowGetStorageById(p->flow, flow_tag_id);
+            SCFlowSetStorageById(p->flow, flow_tag_id, new_tde);
             SCLogDebug(
                     "adding tag with first_ts %" PRIu64, (uint64_t)SCTIME_SECS(new_tde->first_ts));
             (void) SC_ATOMIC_ADD(num_tags, 1);
@@ -191,12 +191,12 @@ int TagHashAddTag(DetectTagDataEntry *tde, Packet *p)
         return -1;
     }
 
-    void *tag = HostGetStorageById(host, host_tag_id);
+    void *tag = SCHostGetStorageById(host, host_tag_id);
     if (tag == NULL) {
         /* get a new tde as the one we have is on the stack */
         DetectTagDataEntry *new_tde = DetectTagDataCopy(tde);
         if (new_tde != NULL) {
-            HostSetStorageById(host, host_tag_id, new_tde);
+            SCHostSetStorageById(host, host_tag_id, new_tde);
             (void) SC_ATOMIC_ADD(num_tags, 1);
             SCLogDebug("host tag added");
         }
@@ -232,7 +232,7 @@ int TagHashAddTag(DetectTagDataEntry *tde, Packet *p)
                 (void) SC_ATOMIC_ADD(num_tags, 1);
 
                 new_tde->next = tag;
-                HostSetStorageById(host, host_tag_id, new_tde);
+                SCHostSetStorageById(host, host_tag_id, new_tde);
             }
         } else if (ntags == DETECT_TAG_MAX_TAGS) {
             SCLogDebug("Max tags for sessions reached (%"PRIu16")", ntags);
@@ -245,12 +245,12 @@ int TagHashAddTag(DetectTagDataEntry *tde, Packet *p)
 
 static void TagHandlePacketFlow(Flow *f, Packet *p)
 {
-    if (FlowGetStorageById(f, flow_tag_id) == NULL)
+    if (SCFlowGetStorageById(f, flow_tag_id) == NULL)
         return;
 
     DetectTagDataEntry *tde = NULL;
     DetectTagDataEntry *prev = NULL;
-    DetectTagDataEntry *iter = FlowGetStorageById(f, flow_tag_id);
+    DetectTagDataEntry *iter = SCFlowGetStorageById(f, flow_tag_id);
     uint8_t flag_added = 0;
 
     while (iter != NULL) {
@@ -286,7 +286,7 @@ static void TagHandlePacketFlow(Flow *f, Packet *p)
                             (void) SC_ATOMIC_SUB(num_tags, 1);
                             continue;
                         } else {
-                            FlowSetStorageById(p->flow, flow_tag_id, iter->next);
+                            SCFlowSetStorageById(p->flow, flow_tag_id, iter->next);
                             tde = iter;
                             iter = iter->next;
                             SCFree(tde);
@@ -313,7 +313,7 @@ static void TagHandlePacketFlow(Flow *f, Packet *p)
                             (void) SC_ATOMIC_SUB(num_tags, 1);
                             continue;
                         } else {
-                            FlowSetStorageById(p->flow, flow_tag_id, iter->next);
+                            SCFlowSetStorageById(p->flow, flow_tag_id, iter->next);
                             tde = iter;
                             iter = iter->next;
                             SCFree(tde);
@@ -347,7 +347,7 @@ static void TagHandlePacketFlow(Flow *f, Packet *p)
                             (void) SC_ATOMIC_SUB(num_tags, 1);
                             continue;
                         } else {
-                            FlowSetStorageById(p->flow, flow_tag_id, iter->next);
+                            SCFlowSetStorageById(p->flow, flow_tag_id, iter->next);
                             tde = iter;
                             iter = iter->next;
                             SCFree(tde);
@@ -377,7 +377,7 @@ static void TagHandlePacketHost(Host *host, Packet *p)
     DetectTagDataEntry *iter;
     uint8_t flag_added = 0;
 
-    iter = HostGetStorageById(host, host_tag_id);
+    iter = SCHostGetStorageById(host, host_tag_id);
     prev = NULL;
     while (iter != NULL) {
         /* update counters */
@@ -414,7 +414,7 @@ static void TagHandlePacketHost(Host *host, Packet *p)
                             iter = iter->next;
                             SCFree(tde);
                             (void) SC_ATOMIC_SUB(num_tags, 1);
-                            HostSetStorageById(host, host_tag_id, iter);
+                            SCHostSetStorageById(host, host_tag_id, iter);
                             continue;
                         }
                     } else if (flag_added == 0) {
@@ -440,7 +440,7 @@ static void TagHandlePacketHost(Host *host, Packet *p)
                             iter = iter->next;
                             SCFree(tde);
                             (void) SC_ATOMIC_SUB(num_tags, 1);
-                            HostSetStorageById(host, host_tag_id, iter);
+                            SCHostSetStorageById(host, host_tag_id, iter);
                             continue;
                         }
                     } else if (flag_added == 0) {
@@ -473,7 +473,7 @@ static void TagHandlePacketHost(Host *host, Packet *p)
                             iter = iter->next;
                             SCFree(tde);
                             (void) SC_ATOMIC_SUB(num_tags, 1);
-                            HostSetStorageById(host, host_tag_id, iter);
+                            SCHostSetStorageById(host, host_tag_id, iter);
                             continue;
                         }
                     } else if (flag_added == 0) {
@@ -569,7 +569,7 @@ int TagTimeoutCheck(Host *host, SCTime_t ts)
     DetectTagDataEntry *prev = NULL;
     int retval = 1;
 
-    tmp = HostGetStorageById(host, host_tag_id);
+    tmp = SCHostGetStorageById(host, host_tag_id);
     if (tmp == NULL)
         return 1;
 
@@ -594,7 +594,7 @@ int TagTimeoutCheck(Host *host, SCTime_t ts)
             SCFree(tde);
             (void) SC_ATOMIC_SUB(num_tags, 1);
         } else {
-            HostSetStorageById(host, host_tag_id, tmp->next);
+            SCHostSetStorageById(host, host_tag_id, tmp->next);
 
             tde = tmp;
             tmp = tde->next;
@@ -660,10 +660,10 @@ static int DetectTagTestPacket01 (void)
                               {0, 0, 0, 0, 0},
                               {0, 0, 0, 0, 0}
                              };
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
 
     SCLogDebug("running tests");
@@ -672,12 +672,12 @@ static int DetectTagTestPacket01 (void)
 
     Host *src = HostLookupHostFromHash(&p[1]->src);
     FAIL_IF_NULL(src);
-    FAIL_IF_NOT_NULL(HostGetStorageById(src, host_tag_id));
+    FAIL_IF_NOT_NULL(SCHostGetStorageById(src, host_tag_id));
 
     Host *dst = HostLookupHostFromHash(&p[1]->dst);
     FAIL_IF_NULL(dst);
 
-    void *tag = HostGetStorageById(dst, host_tag_id);
+    void *tag = SCHostGetStorageById(dst, host_tag_id);
     FAIL_IF_NULL(tag);
 
     DetectTagDataEntry *iter = tag;
@@ -695,7 +695,7 @@ static int DetectTagTestPacket01 (void)
 
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     PASS;
 }
 
@@ -716,10 +716,10 @@ static int DetectTagTestPacket02 (void)
     memset(&th_v, 0, sizeof(th_v));
     StatsThreadInit(&th_v.stats);
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
 
     DetectEngineCtx *de_ctx = DetectEngineCtxInit();
@@ -799,7 +799,7 @@ static int DetectTagTestPacket02 (void)
 
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
@@ -821,10 +821,10 @@ static int DetectTagTestPacket03 (void)
     memset(&th_v, 0, sizeof(th_v));
     StatsThreadInit(&th_v.stats);
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
 
     DetectEngineCtx *de_ctx = DetectEngineCtxInit();
@@ -901,7 +901,7 @@ static int DetectTagTestPacket03 (void)
 
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
@@ -919,10 +919,10 @@ static int DetectTagTestPacket04 (void)
     TcpSession ssn;
     memset(&ssn, 0, sizeof(ssn));
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
     FlowInitConfig(1);
 
@@ -1022,7 +1022,7 @@ static int DetectTagTestPacket04 (void)
     FlowShutdown();
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
@@ -1040,10 +1040,10 @@ static int DetectTagTestPacket05 (void)
     TcpSession ssn;
     memset(&ssn, 0, sizeof(ssn));
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
     FlowInitConfig(1);
 
@@ -1148,7 +1148,7 @@ static int DetectTagTestPacket05 (void)
     FlowShutdown();
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
@@ -1166,10 +1166,10 @@ static int DetectTagTestPacket06 (void)
     TcpSession ssn;
     memset(&ssn, 0, sizeof(ssn));
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
     FlowInitConfig(1);
 
@@ -1270,7 +1270,7 @@ static int DetectTagTestPacket06 (void)
     FlowShutdown();
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
@@ -1288,10 +1288,10 @@ static int DetectTagTestPacket07 (void)
     TcpSession ssn;
     memset(&ssn, 0, sizeof(ssn));
 
-    StorageCleanup();
-    StorageInit();
+    SCStorageCleanup();
+    SCStorageInit();
     TagInitCtx();
-    StorageFinalize();
+    SCStorageFinalize();
     HostInitConfig(1);
     FlowInitConfig(1);
 
@@ -1391,7 +1391,7 @@ static int DetectTagTestPacket07 (void)
     FlowShutdown();
     HostShutdown();
     TagDestroyCtx();
-    StorageCleanup();
+    SCStorageCleanup();
     StatsThreadCleanup(&th_v.stats);
     PASS;
 }
