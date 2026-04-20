@@ -18,7 +18,7 @@ The version can be matched exactly, or compared using the _op_ setting::
  snmp.version:<3   # smaller than 3
  snmp.version:>=2  # greater or equal than 2
 
-Signature example::
+.. container:: example-rule
 
  alert snmp any any -> any any (msg:"old SNMP version (<3)"; snmp.version:<3; sid:1; rev:1;)
 
@@ -38,7 +38,7 @@ Syntax::
 
  snmp.community; content:"private";
 
-Signature example::
+.. container:: example-rule
 
  alert snmp any any -> any any (msg:"SNMP community private"; snmp.community; content:"private"; sid:2; rev:1;)
 
@@ -58,7 +58,7 @@ Syntax::
 
  snmp.usm; content:"admin";
 
-Signature example::
+.. container:: example-rule
 
  alert snmp any any -> any any (msg:"SNMP usm admin"; snmp.usm; content:"admin"; sid:2; rev:1;)
 
@@ -93,7 +93,31 @@ Syntax::
 
  snmp.pdu_type:(mode) <number or string>
 
-Signature example::
+.. container:: example-rule
 
  alert snmp any any -> any any (msg:"SNMP response"; snmp.pdu_type:2; sid:3; rev:1;)
 
+snmp.trap_type
+--------------
+
+SNMP Trap type (integer).
+
+snmp.trap_type uses an, :ref:` unsigned 8-bits integer <rules-integer-keywords>`.
+
+You can specify the value as an integer or a string:
+
+ - 0: coldstart
+ - 1: warmstart
+ - 2: linkdown
+ - 3: linkup
+ - 4: authenticationfailure
+ - 5: egpneighborloss
+ - 6: enterprisespecific
+
+Syntax::
+
+ snmp.trap_type:(mode) <number or string>
+
+Signature example::
+
+ alert snmp any any -> any 162 (msg:"SNMP trap cold start"; snmp.pdu_type:trap_v1; snmp.trap_type:coldstart; sid:3; rev:1;)

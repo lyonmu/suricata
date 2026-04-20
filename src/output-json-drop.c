@@ -168,9 +168,8 @@ static int DropLogJSON(ThreadVars *tv, JsonDropLogThread *aft, const Packet *p)
     }
 
     if (aft->drop_ctx->flags & LOG_DROP_ALERTS) {
-        int logged = 0;
-        int i;
-        for (i = 0; i < p->alerts.cnt; i++) {
+        bool logged = false;
+        for (int i = 0; i < p->alerts.cnt; i++) {
             const PacketAlert *pa = &p->alerts.alerts[i];
             if (unlikely(pa->s == NULL)) {
                 continue;
@@ -179,15 +178,13 @@ static int DropLogJSON(ThreadVars *tv, JsonDropLogThread *aft, const Packet *p)
                ((pa->action & ACTION_DROP) && EngineModeIsIPS()))
             {
                 AlertJsonHeader(p, pa, js, 0, &addr, NULL);
-                logged = 1;
+                logged = true;
                 break;
             }
         }
-        if (logged == 0) {
-            if (p->alerts.drop.action != 0) {
-                const PacketAlert *pa = &p->alerts.drop;
-                AlertJsonHeader(p, pa, js, 0, &addr, NULL);
-            }
+        if (!logged && p->alerts.drop.action != 0) {
+            const PacketAlert *pa = &p->alerts.drop;
+            AlertJsonHeader(p, pa, js, 0, &addr, NULL);
         }
     }
 
@@ -296,8 +293,12 @@ static OutputInitResult JsonDropLogInitCtxSub(SCConfNode *conf, OutputCtx *paren
                              "'flow' are 'start' and 'all'");
             }
         }
+
         extended = SCConfNodeLookupChildValue(conf, "verdict");
-        if (extended != NULL) {
+
+        if (EngineModeIsFirewall()) {
+            drop_ctx->flags |= LOG_DROP_VERDICT;
+        } else if (extended != NULL) {
             if (SCConfValIsTrue(extended)) {
                 drop_ctx->flags |= LOG_DROP_VERDICT;
             }
