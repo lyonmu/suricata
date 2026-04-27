@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2021 Open Information Security Foundation
+/* Copyright (C) 2017-2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,6 +19,8 @@
 
 extern crate ntp_parser;
 use self::ntp_parser::*;
+use super::detect::detect_ntp_register;
+use super::log::ntp_log_json;
 use crate::applayer::{self, *};
 use crate::core;
 use crate::core::{ALPROTO_FAILED, ALPROTO_UNKNOWN};
@@ -29,16 +31,16 @@ use std::ffi::CString;
 
 use nom7::Err;
 use suricata_sys::sys::{
-    AppLayerParserState, AppProto, SCAppLayerParserConfParserEnabled,
-    SCAppLayerProtoDetectConfProtoDetectionEnabled,
+    AppLayerParserState, AppProto, EveJsonTxLoggerRegistrationData,
+    SCAppLayerParserConfParserEnabled, SCAppLayerParserRegisterLogger,
+    SCAppLayerProtoDetectConfProtoDetectionEnabled, SCOutputEvePreRegisterLogger,
+    SCOutputJsonLogDirection, SCSigTablePreRegister,
 };
 
 #[derive(AppLayerEvent)]
 pub enum NTPEvent {
     UnsolicitedResponse,
     MalformedData,
-    NotRequest,
-    NotResponse,
 }
 
 #[derive(Default)]
@@ -58,7 +60,11 @@ pub struct NTPState {
 #[derive(Debug, Default)]
 pub struct NTPTransaction {
     /// The NTP reference ID
-    pub xid: u32,
+    pub reference_id: [u8; 4],
+
+    pub version: u8,
+    pub mode: u8,
+    pub stratum: u8,
 
     /// The internal transaction id
     id: u64,
@@ -96,16 +102,23 @@ impl NTPState {
         match parse_ntp(i) {
             Ok((_, ref msg)) => {
                 // SCLogDebug!("parse_ntp: {:?}",msg);
-                let (mode, ref_id) = match msg {
-                    NtpPacket::V3(pkt) => (pkt.mode, pkt.ref_id),
-                    NtpPacket::V4(pkt) => (pkt.mode, pkt.ref_id),
+                let tx = match msg {
+                    NtpPacket::V3(p) => {
+                        let mut tx = self.new_tx(direction, p.ref_id);
+                        tx.version = 3;
+                        tx.mode = p.mode.0;
+                        tx.stratum = p.stratum;
+                        tx
+                    }
+                    NtpPacket::V4(p) => {
+                        let mut tx = self.new_tx(direction, p.ref_id);
+                        tx.version = 4;
+                        tx.mode = p.mode.0;
+                        tx.stratum = p.stratum;
+                        tx
+                    }
                 };
-                if mode == NtpMode::SymmetricActive || mode == NtpMode::Client {
-                    let mut tx = self.new_tx(direction);
-                    // use the reference id as identifier
-                    tx.xid = ref_id;
-                    self.transactions.push(tx);
-                }
+                self.transactions.push(tx);
                 0
             }
             Err(Err::Incomplete(_)) => {
@@ -127,9 +140,9 @@ impl NTPState {
         self.transactions.clear();
     }
 
-    fn new_tx(&mut self, direction: Direction) -> NTPTransaction {
+    fn new_tx(&mut self, direction: Direction, ref_id: u32) -> NTPTransaction {
         self.tx_id += 1;
-        NTPTransaction::new(direction, self.tx_id)
+        NTPTransaction::new(direction, self.tx_id, ref_id)
     }
 
     pub fn get_tx_by_id(&mut self, tx_id: u64) -> Option<&NTPTransaction> {
@@ -154,11 +167,12 @@ impl NTPState {
 }
 
 impl NTPTransaction {
-    pub fn new(direction: Direction, id: u64) -> NTPTransaction {
+    pub fn new(direction: Direction, id: u64, reference_id: u32) -> NTPTransaction {
         NTPTransaction {
-            xid: 0,
+            reference_id: reference_id.to_be_bytes(),
             id,
             tx_data: applayer::AppLayerTxData::for_direction(direction),
+            ..Default::default()
         }
     }
 }
@@ -227,7 +241,7 @@ extern "C" fn ntp_tx_get_alstate_progress(
     1
 }
 
-static mut ALPROTO_NTP: AppProto = ALPROTO_UNKNOWN;
+pub(super) static mut ALPROTO_NTP: AppProto = ALPROTO_UNKNOWN;
 
 extern "C" fn ntp_probing_parser(
     _flow: *const Flow, _direction: u8, input: *const u8, input_len: u32, _rdir: *mut u8,
@@ -295,12 +309,20 @@ pub unsafe extern "C" fn SCRegisterNtpParser() {
 
     let ip_proto_str = CString::new("udp").unwrap();
     if SCAppLayerProtoDetectConfProtoDetectionEnabled(ip_proto_str.as_ptr(), parser.name) != 0 {
-        let alproto = applayer_register_protocol_detection(&parser, 1);
-        // store the allocated ID for the probe function
-        ALPROTO_NTP = alproto;
+        ALPROTO_NTP = applayer_register_protocol_detection(&parser, 1);
+        let reg_data = EveJsonTxLoggerRegistrationData {
+            confname: b"eve-log.ntp\0".as_ptr() as *const std::os::raw::c_char,
+            logname: b"JsonNTPLog\0".as_ptr() as *const std::os::raw::c_char,
+            alproto: ALPROTO_NTP,
+            dir: SCOutputJsonLogDirection::LOG_DIR_PACKET as u8,
+            LogTx: Some(ntp_log_json),
+        };
+        SCOutputEvePreRegisterLogger(reg_data);
+        SCSigTablePreRegister(Some(detect_ntp_register));
         if SCAppLayerParserConfParserEnabled(ip_proto_str.as_ptr(), parser.name) != 0 {
-            let _ = AppLayerRegisterParser(&parser, alproto);
+            let _ = AppLayerRegisterParser(&parser, ALPROTO_NTP);
         }
+        SCAppLayerParserRegisterLogger(core::IPPROTO_UDP, ALPROTO_NTP);
     } else {
         SCLogDebug!("Protocol detector and parser disabled for NTP.");
     }

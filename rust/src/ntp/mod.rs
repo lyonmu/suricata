@@ -15,8 +15,10 @@
  * 02110-1301, USA.
  */
 
-//! NTP application layer and parser module.
+//! NTP application layer, parser and logger module.
 
 // written by Pierre Chifflier  <chifflier@wzdftpd.net>
 
+pub mod detect;
+pub mod log;
 pub mod ntp;

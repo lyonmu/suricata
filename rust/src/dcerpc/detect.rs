@@ -16,12 +16,21 @@
  */
 
 use super::dcerpc::{
-    DCERPCState, DCERPCTransaction, DCERPC_TYPE_REQUEST, DCERPC_TYPE_RESPONSE,
+    DCERPCState, DCERPCTransaction, ALPROTO_DCERPC, DCERPC_TYPE_REQUEST, DCERPC_TYPE_RESPONSE,
     DCERPC_UUID_ENTRY_FLAG_FF,
 };
+use crate::core::{STREAM_TOCLIENT, STREAM_TOSERVER};
 use crate::detect::uint::{detect_match_uint, detect_parse_uint, DetectUintData};
+use crate::smb::detect::{smb_tx_match_dce_iface, smb_tx_match_dce_opnum};
+use crate::smb::smb::ALPROTO_SMB;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_void};
+use std::os::raw::{c_char, c_int, c_void};
+use suricata_sys::sys::{
+    DetectEngineCtx, DetectEngineThreadCtx, SCDetectHelperBufferProgressRegister,
+    SCDetectHelperKeywordAliasRegister, SCDetectHelperKeywordRegister,
+    SCDetectSignatureSetAppProto, SCFlowGetAppProtocol, SCSigMatchAppendSMToList,
+    SCSigTableAppLiteElmt, SigMatchCtx, Signature,
+};
 use uuid::Uuid;
 
 pub const DETECT_DCE_OPNUM_RANGE_UNINITIALIZED: u32 = 100000;
@@ -55,13 +64,19 @@ impl DCEOpnumRange {
 }
 
 #[derive(Debug)]
-pub struct DCEOpnumData {
+pub(crate) struct DCEOpnumDataRanges {
     pub data: Vec<DCEOpnumRange>,
+}
+
+#[derive(Debug)]
+pub(crate) enum DCEOpnumData {
+    Ranges(DCEOpnumDataRanges),
+    Num(DetectUintData<u16>),
 }
 
 fn match_backuuid(
     tx: &DCERPCTransaction, state: &mut DCERPCState, if_data: &mut DCEIfaceData,
-) -> u8 {
+) -> c_int {
     let mut ret = 0;
     if !state.interface_uuids.is_empty() {
         for uuidentry in &state.interface_uuids {
@@ -86,7 +101,7 @@ fn match_backuuid(
                 }
             }
             let ctxid = tx.get_req_ctxid();
-            ret &= (uuidentry.ctxid == ctxid) as u8;
+            ret &= (uuidentry.ctxid == ctxid) as c_int;
             if ret == 0 {
                 SCLogDebug!("CTX IDs/UUIDs do not match");
                 continue;
@@ -165,7 +180,7 @@ fn convert_str_to_u32(arg: &str) -> Result<u32, ()> {
     }
 }
 
-fn parse_opnum_data(arg: &str) -> Result<DCEOpnumData, ()> {
+fn parse_opnum_data_ranges(arg: &str) -> Result<DCEOpnumData, ()> {
     let split_args: Vec<&str> = arg.split(',').collect();
     let mut dce_opnum_data: Vec<DCEOpnumRange> = Vec::new();
     for range in split_args.iter() {
@@ -198,32 +213,55 @@ fn parse_opnum_data(arg: &str) -> Result<DCEOpnumData, ()> {
         dce_opnum_data.push(opnum_range);
     }
 
-    Ok(DCEOpnumData {
+    Ok(DCEOpnumData::Ranges(DCEOpnumDataRanges {
         data: dce_opnum_data,
-    })
+    }))
 }
 
-#[no_mangle]
-pub extern "C" fn SCDcerpcIfaceMatch(
-    tx: &DCERPCTransaction, state: &mut DCERPCState, if_data: &mut DCEIfaceData,
-) -> u8 {
+fn parse_opnum_data(arg: &str) -> Result<DCEOpnumData, ()> {
+    if let Ok(r) = parse_opnum_data_ranges(arg) {
+        return Ok(r);
+    }
+    if let Ok((_, du16)) = detect_parse_uint::<u16>(arg) {
+        return Ok(DCEOpnumData::Num(du16));
+    }
+    return Err(());
+}
+
+unsafe fn dcerpc_tx_match_dce_iface(
+    tx: *mut c_void, state: *mut c_void, if_data: *const SigMatchCtx,
+) -> c_int {
+    let tx = cast_pointer!(tx, DCERPCTransaction);
+    let state = cast_pointer!(state, DCERPCState);
+    let if_data = cast_pointer!(if_data, DCEIfaceData);
+
     let first_req_seen = tx.get_first_req_seen();
     if first_req_seen == 0 {
         return 0;
     }
 
     if !(tx.req_cmd == DCERPC_TYPE_REQUEST || tx.resp_cmd == DCERPC_TYPE_RESPONSE) {
-            return 0;
+        return 0;
     }
 
     return match_backuuid(tx, state, if_data);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCDcerpcIfaceParse(carg: *const c_char) -> *mut c_void {
-    if carg.is_null() {
-        return std::ptr::null_mut();
+unsafe extern "C" fn dcerpc_iface_match(
+    _de: *mut DetectEngineThreadCtx, f: *mut crate::flow::Flow, _flags: u8, state: *mut c_void,
+    tx: *mut c_void, _sig: *const Signature, ctx: *const SigMatchCtx,
+) -> c_int {
+    if SCFlowGetAppProtocol(f) == ALPROTO_DCERPC {
+        return dcerpc_tx_match_dce_iface(tx, state, ctx);
     }
+    if smb_tx_match_dce_iface(state, tx, ctx) != 1 {
+        return 0;
+    }
+
+    return 1;
+}
+
+unsafe fn dcerpc_iface_parse(carg: *const c_char) -> *mut c_void {
     let arg = match CStr::from_ptr(carg).to_str() {
         Ok(arg) => arg,
         _ => {
@@ -237,58 +275,172 @@ pub unsafe extern "C" fn SCDcerpcIfaceParse(carg: *const c_char) -> *mut c_void 
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCDcerpcIfaceFree(ptr: *mut c_void) {
+unsafe extern "C" fn dcerpc_iface_setup(
+    de: *mut DetectEngineCtx, s: *mut Signature, raw: *const libc::c_char,
+) -> c_int {
+    if SCDetectSignatureSetAppProto(s, ALPROTO_DCERPC) != 0 {
+        return -1;
+    }
+    let ctx = dcerpc_iface_parse(raw);
+    if ctx.is_null() {
+        return -1;
+    }
+    if SCSigMatchAppendSMToList(
+        de,
+        s,
+        G_DCERPC_IFACE_KW_ID,
+        ctx as *mut SigMatchCtx,
+        G_DCERPC_GENERIC_BUFFER_ID,
+    )
+    .is_null()
+    {
+        dcerpc_iface_free(std::ptr::null_mut(), ctx);
+        return -1;
+    }
+    return 0;
+}
+
+unsafe extern "C" fn dcerpc_iface_free(_de: *mut DetectEngineCtx, ptr: *mut c_void) {
     if !ptr.is_null() {
         std::mem::drop(Box::from_raw(ptr as *mut DCEIfaceData));
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCDcerpcOpnumMatch(
-    tx: &DCERPCTransaction, opnum_data: &mut DCEOpnumData,
-) -> u8 {
+unsafe extern "C" fn dcerpc_tx_match_dce_opnum(tx: *mut c_void, ctx: *const SigMatchCtx) -> c_int {
+    let tx = cast_pointer!(tx, DCERPCTransaction);
+    let opnum_data = cast_pointer!(ctx, DCEOpnumData);
+
     let first_req_seen = tx.get_first_req_seen();
     if first_req_seen == 0 {
         return 0;
     }
     let opnum = tx.get_req_opnum();
-    for range in opnum_data.data.iter() {
-        if range.range2 == DETECT_DCE_OPNUM_RANGE_UNINITIALIZED {
-            if range.range1 == opnum as u32 {
+    match opnum_data {
+        DCEOpnumData::Num(ref num_data) => {
+            if detect_match_uint(num_data, opnum) {
                 return 1;
             }
-        } else if range.range1 <= opnum as u32 && range.range2 >= opnum as u32 {
-            return 1;
+        }
+        DCEOpnumData::Ranges(ref ranges_data) => {
+            for range in ranges_data.data.iter() {
+                if range.range2 == DETECT_DCE_OPNUM_RANGE_UNINITIALIZED {
+                    if range.range1 == opnum as u32 {
+                        return 1;
+                    }
+                } else if range.range1 <= opnum as u32 && range.range2 >= opnum as u32 {
+                    return 1;
+                }
+            }
         }
     }
 
     0
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCDcerpcOpnumParse(carg: *const c_char) -> *mut c_void {
-    if carg.is_null() {
-        return std::ptr::null_mut();
+unsafe extern "C" fn dcerpc_opnum_parse(carg: *const c_char) -> *mut c_void {
+    if let Ok(arg) = CStr::from_ptr(carg).to_str() {
+        return match parse_opnum_data(arg) {
+            Ok(detect) => Box::into_raw(Box::new(detect)) as *mut _,
+            Err(_) => std::ptr::null_mut(),
+        };
     }
-    let arg = match CStr::from_ptr(carg).to_str() {
-        Ok(arg) => arg,
-        _ => {
-            return std::ptr::null_mut();
-        }
-    };
-
-    match parse_opnum_data(arg) {
-        Ok(detect) => Box::into_raw(Box::new(detect)) as *mut _,
-        Err(_) => std::ptr::null_mut(),
-    }
+    return std::ptr::null_mut();
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCDcerpcOpnumFree(ptr: *mut c_void) {
+unsafe extern "C" fn dcerpc_opnum_setup(
+    de: *mut DetectEngineCtx, s: *mut Signature, raw: *const libc::c_char,
+) -> c_int {
+    if SCDetectSignatureSetAppProto(s, ALPROTO_DCERPC) != 0 {
+        return -1;
+    }
+    let ctx = dcerpc_opnum_parse(raw) as *mut c_void;
+    if ctx.is_null() {
+        return -1;
+    }
+    if SCSigMatchAppendSMToList(
+        de,
+        s,
+        G_DCERPC_OPNUM_KW_ID,
+        ctx as *mut SigMatchCtx,
+        G_DCERPC_GENERIC_BUFFER_ID,
+    )
+    .is_null()
+    {
+        dcerpc_opnum_free(std::ptr::null_mut(), ctx);
+        return -1;
+    }
+    return 0;
+}
+
+unsafe extern "C" fn dcerpc_opnum_match(
+    _de: *mut DetectEngineThreadCtx, f: *mut crate::flow::Flow, _flags: u8, _state: *mut c_void,
+    tx: *mut c_void, _sig: *const Signature, ctx: *const SigMatchCtx,
+) -> c_int {
+    if SCFlowGetAppProtocol(f) == ALPROTO_DCERPC {
+        return dcerpc_tx_match_dce_opnum(tx, ctx);
+    }
+    if smb_tx_match_dce_opnum(tx, ctx) != 1 {
+        return 0;
+    }
+
+    return 1;
+}
+
+unsafe extern "C" fn dcerpc_opnum_free(_de: *mut DetectEngineCtx, ptr: *mut c_void) {
     if !ptr.is_null() {
         std::mem::drop(Box::from_raw(ptr as *mut DCEOpnumData));
     }
+}
+
+static mut G_DCERPC_OPNUM_KW_ID: u16 = 0;
+static mut G_DCERPC_GENERIC_BUFFER_ID: c_int = 0;
+static mut G_DCERPC_IFACE_KW_ID: u16 = 0;
+
+#[no_mangle]
+pub unsafe extern "C" fn SCDetectDcerpcRegister() {
+    let kw = SCSigTableAppLiteElmt {
+        name: b"dcerpc.opnum\0".as_ptr() as *const libc::c_char,
+        desc: b"match on one or many operation numbers within the interface in a DCERPC header\0"
+            .as_ptr() as *const libc::c_char,
+        url: b"/rules/dcerpc-keywords.html#dcerpc-opnum\0".as_ptr() as *const libc::c_char,
+        AppLayerTxMatch: Some(dcerpc_opnum_match),
+        Setup: Some(dcerpc_opnum_setup),
+        Free: Some(dcerpc_opnum_free),
+        flags: 0,
+    };
+    G_DCERPC_OPNUM_KW_ID = SCDetectHelperKeywordRegister(&kw);
+    G_DCERPC_GENERIC_BUFFER_ID = SCDetectHelperBufferProgressRegister(
+        b"dce_generic\0".as_ptr() as *const libc::c_char,
+        ALPROTO_DCERPC,
+        STREAM_TOSERVER | STREAM_TOCLIENT,
+        0,
+    );
+    _ = SCDetectHelperBufferProgressRegister(
+        b"dce_generic\0".as_ptr() as *const libc::c_char,
+        ALPROTO_SMB,
+        STREAM_TOSERVER | STREAM_TOCLIENT,
+        0,
+    );
+    SCDetectHelperKeywordAliasRegister(
+        G_DCERPC_OPNUM_KW_ID,
+        b"dce_opnum\0".as_ptr() as *const libc::c_char,
+    );
+
+    let kw = SCSigTableAppLiteElmt {
+        name: b"dcerpc.iface\0".as_ptr() as *const libc::c_char,
+        desc: b"match on the value of the interface UUID in a DCERPC header\0".as_ptr()
+            as *const libc::c_char,
+        url: b"/rules/dcerpc-keywords.html#dcerpc-iface\0".as_ptr() as *const libc::c_char,
+        AppLayerTxMatch: Some(dcerpc_iface_match),
+        Setup: Some(dcerpc_iface_setup),
+        Free: Some(dcerpc_iface_free),
+        flags: 0,
+    };
+    G_DCERPC_IFACE_KW_ID = SCDetectHelperKeywordRegister(&kw);
+    SCDetectHelperKeywordAliasRegister(
+        G_DCERPC_IFACE_KW_ID,
+        b"dce_iface\0".as_ptr() as *const libc::c_char,
+    );
 }
 
 #[cfg(test)]
@@ -431,6 +583,9 @@ mod test {
     fn test_parse_opnum_data() {
         let arg = "12";
         let opnum_data = parse_opnum_data(arg).unwrap();
+        let DCEOpnumData::Ranges(opnum_data) = opnum_data else {
+            panic!("Result should have been ranges.");
+        };
         assert_eq!(1, opnum_data.data.len());
         assert_eq!(12, opnum_data.data[0].range1);
         assert_eq!(
@@ -440,12 +595,18 @@ mod test {
 
         let arg = "12,24";
         let opnum_data = parse_opnum_data(arg).unwrap();
+        let DCEOpnumData::Ranges(opnum_data) = opnum_data else {
+            panic!("Result should have been ranges.");
+        };
         assert_eq!(2, opnum_data.data.len());
         assert_eq!(12, opnum_data.data[0].range1);
         assert_eq!(24, opnum_data.data[1].range1);
 
         let arg = "12,12-24";
         let opnum_data = parse_opnum_data(arg).unwrap();
+        let DCEOpnumData::Ranges(opnum_data) = opnum_data else {
+            panic!("Result should have been ranges.");
+        };
         assert_eq!(2, opnum_data.data.len());
         assert_eq!(12, opnum_data.data[0].range1);
         assert_eq!(12, opnum_data.data[1].range1);
@@ -453,6 +614,9 @@ mod test {
 
         let arg = "12-14,12,121,62-78";
         let opnum_data = parse_opnum_data(arg).unwrap();
+        let DCEOpnumData::Ranges(opnum_data) = opnum_data else {
+            panic!("Result should have been ranges.");
+        };
         assert_eq!(4, opnum_data.data.len());
         assert_eq!(12, opnum_data.data[0].range1);
         assert_eq!(14, opnum_data.data[0].range2);
@@ -461,6 +625,9 @@ mod test {
 
         let arg = "12,26,62,61,6513-6666";
         let opnum_data = parse_opnum_data(arg).unwrap();
+        let DCEOpnumData::Ranges(opnum_data) = opnum_data else {
+            panic!("Result should have been ranges.");
+        };
         assert_eq!(5, opnum_data.data.len());
         assert_eq!(61, opnum_data.data[3].range1);
         assert_eq!(6513, opnum_data.data[4].range1);

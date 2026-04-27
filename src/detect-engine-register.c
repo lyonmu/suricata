@@ -156,8 +156,6 @@
 #include "detect-icmpv4hdr.h"
 #include "detect-igmphdr.h"
 #include "detect-igmp-type.h"
-#include "detect-dce-iface.h"
-#include "detect-dce-opnum.h"
 #include "detect-dce-stub-data.h"
 #include "detect-urilen.h"
 #include "detect-bsize.h"
@@ -668,8 +666,6 @@ void SigTableSetup(void)
     DetectIcmpv4HdrRegister();
     DetectIGMPHdrRegister();
     DetectIGMPTypeRegister();
-    DetectDceIfaceRegister();
-    DetectDceOpnumRegister();
     DetectDceStubDataRegister();
     DetectTlsRegister();
     DetectTlsValidityRegister();
@@ -762,6 +758,7 @@ void SigTableSetup(void)
     SCDetectQuicRegister();
     SCDetectSmbRegister();
     SCDetectIkeRegister();
+    SCDetectDcerpcRegister();
 
     for (size_t i = 0; i < preregistered_callbacks_nb; i++) {
         PreregisteredCallbacks[i]();

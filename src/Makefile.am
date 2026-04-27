@@ -117,8 +117,6 @@ noinst_HEADERS = \
 	detect-csum.h \
 	detect-datarep.h \
 	detect-dataset.h \
-	detect-dce-iface.h \
-	detect-dce-opnum.h \
 	detect-dce-stub-data.h \
 	detect-depth.h \
 	detect-detection-filter.h \
@@ -699,8 +697,6 @@ libsuricata_c_a_SOURCES = \
 	detect-csum.c \
 	detect-datarep.c \
 	detect-dataset.c \
-	detect-dce-iface.c \
-	detect-dce-opnum.c \
 	detect-dce-stub-data.c \
 	detect-depth.c \
 	detect-detection-filter.c \
