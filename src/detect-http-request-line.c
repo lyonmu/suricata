@@ -77,7 +77,7 @@ static InspectionBuffer *GetData2(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         uint32_t b_len = 0;
         const uint8_t *b = NULL;
@@ -87,7 +87,7 @@ static InspectionBuffer *GetData2(DetectEngineThreadCtx *det_ctx,
         if (b == NULL || b_len == 0)
             return NULL;
 
-        InspectionBufferSetupAndApplyTransforms(det_ctx, list_id, buffer, b, b_len, transforms);
+        SCInspectionBufferSetupAndApplyTransforms(det_ctx, list_id, buffer, b, b_len, transforms);
     }
 
     return buffer;
@@ -117,9 +117,9 @@ void DetectHttpRequestLineRegister(void)
             PrefilterGenericMpmRegister, GetData, ALPROTO_HTTP1, HTP_REQUEST_PROGRESS_LINE);
 
     DetectAppLayerInspectEngineRegister("http_request_line", ALPROTO_HTTP2, SIG_FLAG_TOSERVER,
-            HTTP2StateDataClient, DetectEngineInspectBufferGeneric, GetData2);
+            HTTP2StateOpen, DetectEngineInspectBufferGeneric, GetData2);
     DetectAppLayerMpmRegister("http_request_line", SIG_FLAG_TOSERVER, 2,
-            PrefilterGenericMpmRegister, GetData2, ALPROTO_HTTP2, HTTP2StateDataClient);
+            PrefilterGenericMpmRegister, GetData2, ALPROTO_HTTP2, HTTP2StateOpen);
 
     DetectBufferTypeSetDescriptionByName("http_request_line",
             "http request line");
@@ -156,7 +156,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         Flow *_f, const uint8_t _flow_flags,
         void *txv, const int list_id)
 {
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         htp_tx_t *tx = (htp_tx_t *)txv;
         if (unlikely(htp_tx_request_line(tx) == NULL)) {
@@ -165,7 +165,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = (uint32_t)bstr_len(htp_tx_request_line(tx));
         const uint8_t *data = bstr_ptr(htp_tx_request_line(tx));
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
     return buffer;

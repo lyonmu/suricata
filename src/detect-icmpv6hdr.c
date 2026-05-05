@@ -53,7 +53,7 @@ void DetectICMPv6hdrRegister(void)
 {
     sigmatch_table[DETECT_ICMPV6HDR].name = "icmpv6.hdr";
     sigmatch_table[DETECT_ICMPV6HDR].desc = "sticky buffer to match on the ICMP V6 header";
-    sigmatch_table[DETECT_ICMPV6HDR].url = "/rules/header-keywords.html#icmpv6hdr";
+    sigmatch_table[DETECT_ICMPV6HDR].url = "/rules/header-keywords.html#icmpv6-hdr";
     sigmatch_table[DETECT_ICMPV6HDR].Setup = DetectICMPv6hdrSetup;
     sigmatch_table[DETECT_ICMPV6HDR].flags |= SIGMATCH_NOOPT | SIGMATCH_INFO_STICKY_BUFFER;
 #ifdef UNITTESTS
@@ -100,7 +100,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         if (!PacketIsICMPv6(p)) {
             // DETECT_PROTO_IPV6 does not prefilter
@@ -115,7 +115,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
             SCReturnPtr(NULL, "InspectionBuffer");
         }
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, (const uint8_t *)icmpv6h, ICMPV6_HEADER_LEN, transforms);
     }
 

@@ -1,10 +1,12 @@
+.. role:: example-rule-emphasis
+
 Transformations
 ===============
 
 Transformation keywords turn the data at a sticky buffer into something else. Some transformations
 support options for greater control over the transformation process
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (file_data; strip_whitespace; \
         content:"window.navigate("; sid:1;)
@@ -15,10 +17,10 @@ the ``navigate`` and ``(``.
 The transforms can be chained. They are processed in the order in which they
 appear in a rule. Each transform's output acts as input for the next one.
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http_request_line; compress_whitespace; to_sha256; \
-        content:"|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7 049E E5AD CED3 945A FC79 7401|"; sid:1;)
+        content:"\|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7 049E E5AD CED3 945A FC79 7401\|"; sid:1;)
 
 .. note:: not all sticky buffers support transformations yet
 
@@ -29,7 +31,7 @@ Takes the buffer, and prepends a ``.`` character to help facilitate concise doma
 an input string of ``hello.google.com`` would be modified and become ``.hello.google.com``. Additionally,
 adding the dot allows ``google.com`` to match against ``content:".google.com"``
 
-Example::
+.. container:: example-rule
 
     alert dns any any -> any any (dns.query; dotprefix; \
         content:".microsoft.com"; sid:1;)
@@ -37,7 +39,9 @@ Example::
 This example will match on ``windows.update.microsoft.com`` and
 ``maps.microsoft.com.au`` but not ``windows.update.fakemicrosoft.com``.
 
-This rule can be used to match on the domain only; example::
+This rule can be used to match on the domain only; example:
+
+.. container:: example-rule
 
     alert dns any any -> any any (dns.query; dotprefix; \
         content:".microsoft.com"; endswith; sid:1;)
@@ -45,7 +49,9 @@ This rule can be used to match on the domain only; example::
 This example will match on ``windows.update.microsoft.com`` but not
 ``windows.update.microsoft.com.au``.
 
-Finally, this rule can be used to match on the TLD only; example::
+Finally, this rule can be used to match on the TLD only; example:
+
+.. container:: example-rule
 
     alert dns any any -> any any (dns.query; dotprefix; \
         content:".co.uk"; endswith; sid:1;)
@@ -94,7 +100,7 @@ strip_whitespace
 
 Strips all whitespace as considered by the ``isspace()`` call in C.
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (file_data; strip_whitespace; \
         content:"window.navigate("; sid:1;)
@@ -111,7 +117,7 @@ Converts the buffer to lowercase and passes the value on.
 
 This example alerts if ``http.uri`` contains ``this text has been converted to lowercase``
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http.uri; to_lowercase; \
         content:"this text has been converted to lowercase"; sid:1;)
@@ -122,10 +128,10 @@ to_md5
 Takes the buffer, calculates the MD5 hash and passes the raw hash value
 on.
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http_request_line; to_md5; \
-        content:"|54 A9 7A 8A B0 9C 1B 81 37 25 22 14 51 D3 F9 97|"; sid:1;)
+        content:"\|54 A9 7A 8A B0 9C 1B 81 37 25 22 14 51 D3 F9 97\|"; sid:1;)
 
 to_uppercase
 ------------
@@ -134,7 +140,7 @@ Converts the buffer to uppercase and passes the value on.
 
 This example alerts if ``http.uri`` contains ``THIS TEXT HAS BEEN CONVERTED TO UPPERCASE``
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http.uri; to_uppercase; \
         content:"THIS TEXT HAS BEEN CONVERTED TO UPPERCASE"; sid:1;)
@@ -145,10 +151,10 @@ to_sha1
 Takes the buffer, calculates the SHA-1 hash and passes the raw hash value
 on.
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http_request_line; to_sha1; \
-        content:"|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7|"; sid:1;)
+        content:"\|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7\|"; sid:1;)
 
 to_sha256
 ---------
@@ -156,10 +162,10 @@ to_sha256
 Takes the buffer, calculates the SHA-256 hash and passes the raw hash value
 on.
 
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (http_request_line; to_sha256; \
-        content:"|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7 049E E5AD CED3 945A FC79 7401|"; sid:1;)
+        content:"\|54A9 7A8A B09C 1B81 3725 2214 51D3 F997 F015 9DD7 049E E5AD CED3 945A FC79 7401\|"; sid:1;)
 
 pcrexform
 ---------
@@ -170,7 +176,7 @@ Takes the buffer, applies the required regular expression, and outputs the *firs
 
 
 This example alerts if ``http.request_line`` contains ``/dropper.php``
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"HTTP with pcrexform"; http.request_line; \
         pcrexform:"[a-zA-Z]+\s+(.*)\s+HTTP"; content:"/dropper.php"; sid:1;)
@@ -190,7 +196,7 @@ Takes the buffer, applies xor decoding.
 
 
 This example alerts if ``http.uri`` contains ``password=`` xored with 4-bytes key ``0d0ac8ff``
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"HTTP with xor"; http.uri; \
         xor:"0d0ac8ff"; content:"password="; sid:1;)
@@ -206,7 +212,7 @@ The implementation uses a state machine :
 - it does not change until it finds a new line and switch back to first state
 
 This example alerts for both HTTP/1 and HTTP/2 with a authorization header
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"HTTP authorization"; http.header_names; \
         header_lowercase; content:"authorization:"; sid:1;)
@@ -220,10 +226,10 @@ It strips HTTP2 pseudo-headers (names and values).
 The implementation just strips every line beginning by ``:``.
 
 This example alerts for both HTTP/1 and HTTP/2 with only a user agent
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"HTTP ua only"; http.header_names; \
-       bsize:16; content:"|0d 0a|User-Agent|0d 0a 0d 0a|"; nocase; sid:1;)
+       bsize:16; content:"\|0d 0a\|User-Agent\|0d 0a 0d 0a\|"; nocase; sid:1;)
 
 .. _from_base64:
 
@@ -409,7 +415,7 @@ the transform will decompress data up to max-size.
 Value 0 is forbidden for max-size (there is no unlimited value).
 
 This example alerts if ``http.uri`` contains base64-encoded gzipped value
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"from_base64 + gunzip";
             http.uri; content:"/gzb64?value="; fast_pattern;
@@ -431,10 +437,192 @@ the transform will decompress data up to max-size.
 Value 0 is forbidden for max-size (there is no unlimited value).
 
 This example alerts if ``http.uri`` contains base64-encoded zlib-compressed value
-Example::
+.. container:: example-rule
 
     alert http any any -> any any (msg:"from_base64 + gunzip";
             http.uri; content:"/zb64?value="; fast_pattern;
             from_base64: offset 12 ;
             zlib_deflate; content:"This is compressed then base64-encoded"; startswith; endswith;
             sid:2; rev:1;)
+
+subslice
+--------
+
+This transform creates a slice of the input buffer.
+
+The subslice transform requires parameters:
+
+  * `offset` Specifies the starting offset at which to create the
+    subslice. When negative, expresses how far from the end of the
+    input buffer to begin. If the absolute value of a negative offset
+    exceeds the buffer length and ``truncate`` is not present, the
+    transform will produce an empty buffer. When ``truncate`` is
+    present, the starting position is reset to the beginning
+    of the buffer. [REQUIRED]
+  * `nbytes` Specifies the size of the subslice. When negative,
+    specifies that the subslice ends *nbytes* bytes from
+    the end of the input buffer. If the absolute value of a negative
+    ``nbytes`` exceeds the buffer length and ``truncate`` is not present,
+    the transform will produce an empty buffer. When ``truncate`` is
+    present, the endpoint is limited to the beginning of the
+    buffer. The default value is the size of the input buffer minus
+    the value of ``offset``. [OPTIONAL]
+  * `truncate` Specifies behavior when ``offset + nbytes`` is larger
+    than the input buffer size, or when the absolute value of a negative
+    offset or negative ``nbytes`` exceeds the buffer length. When present,
+    the result is trimmed as though ``offset + nbytes == buffer_length``
+    and excessive negative values are reset to the buffer boundaries.
+    When not present (DEFAULT), a subslice larger than
+    ``offset + nbytes`` produces an empty buffer, on which ``bsize:0``
+    will match. [OPTIONAL]
+
+Usage
+~~~~~
+
+Specify the subslice desired -- `nbytes` and `truncate` are optional:
+
+Format::
+
+     subslice: offset <, nbytes>, <, truncate>;
+
+When `nbytes` is not present, the size of the subslice will be the size
+of the input buffer minus the `offset` value.
+
+When ``truncate`` is not present and the value of ``offset + nbytes`` exceeds
+the buffer length, an empty buffer will be produced such that ``bsize: 0`` will
+match.
+
+Examples
+~~~~~~~~
+
+The following examples use an input buffer of ``This is Suricata``.
+
+The subslice will be a copy of the input buffer but omit the input buffer's first byte.
+The subslice is ``his is Suricata``::
+
+    subslice: 1;
+
+This example creates the subslice ``This is Suric``::
+
+    subslice: 0, 13;
+
+This example starts at offset ``10`` and ends at 5 bytes from the end
+of the buffer which creates a subslice from offset ``10`` to offset ``12``.
+The length of the input buffer is ``17`` bytes; ``5`` bytes from the end
+is ``12``. The subslice is "r" ::
+
+    subslice: 10, -5;
+
+This example will create a subslice from the last 3 bytes of the input
+buffer and create ``ata``::
+
+    subslice: -3;
+
+
+Summary of Truncate Behavior: Edge Cases
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following table summarizes how ``truncate`` handles edge cases with
+the input buffer ``curl/7.64.1`` (11 bytes):
+
+
++-------------------------------+---------------------+---------------------------+
+| Transform                     | No truncate         | With truncate             |
++===============================+=====================+===========================+
+| ``subslice: 5;``              | **7.64.1** (6 bytes)| **7.64.1** (6 bytes)      |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: -20;``            | Empty buffer        | Full buffer (start at 0)  |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: -20, 5;``         | Empty buffer        | **curl/** (5 bytes)       |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: 0, -30;``         | Empty buffer        | Empty buffer (end at 0)   |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: 0, -8;``          | **cur** (3 bytes)   | **cur** (3 bytes)         |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: -20, -30;``       | Empty buffer        | Empty buffer              |
++-------------------------------+---------------------+---------------------------+
+| ``subslice: 0, 30;``          | Empty buffer        | Full buffer (11 bytes)    |
++-------------------------------+---------------------+---------------------------+
+
+
+Truncation Behavior
+~~~~~~~~~~~~~~~~~~~
+
+When the buffer has fewer bytes than ``offset + nbytes``, the transform
+will either trim the resulting buffer as though ``offset + nbytes == buffer_length``
+or produce an empty buffer on which ``bsize:0`` would match. The behavior
+is determined by the inclusion of ``truncate`` with the keyword.
+
+The following examples use an input buffer with the value ``curl/7.64.1``.
+
+Without ``truncate`` (the default), when ``offset + nbytes`` exceeds
+the buffer length, the transform produces an empty buffer on which
+``bsize:0`` would match::
+
+    subslice: 0, 30;
+
+When ``truncate`` is present, ``nbytes + offset`` is reduced
+to equal the input buffer length. The transform produces ``curl/7.64.1``::
+
+    subslice: 0, 30, truncate;
+
+``truncate`` does not require ``nbytes`` to be present. The transform
+produces ``curl/7.64.1``::
+
+    subslice: 0, truncate;
+
+Negative Offset Handling
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a negative offset's absolute value exceeds the buffer length, the behavior
+depends on whether ``truncate`` is present:
+
+Without ``truncate``, the transform produces an empty buffer. For example,
+with input buffer ``This is Suricata`` (16 bytes), using ``subslice: -17;``
+produces an empty string and ``bsize:0`` would match::
+
+    subslice: -17;
+
+With ``truncate`` present, an excessive negative offset is reset to the
+buffer length, effectively starting at offset 0. Using the same input buffer
+``This is Suricata`` (16 bytes), ``subslice: -17, truncate;`` is treated as
+``subslice: -16, truncate;`` and produces the full buffer ``This is Suricata``::
+
+    subslice: -17, truncate;
+
+This also works with ``nbytes``. For example, ``subslice: -20, 5, truncate;``
+with input buffer ``This is Suricata`` starts at offset 0 and takes 5 bytes,
+producing ``This`` (with a trailing space)::
+
+    subslice: -20, 5, truncate;
+
+Similarly, when ``truncate`` is present, negative ``nbytes`` values that would
+place the endpoint before the beginning of the buffer are reset to the
+beginning of the buffer. For example, ``subslice: 0, -30, truncate;`` with
+input buffer ``This is Suricata`` (16 bytes) resets the endpoint to the
+beginning of the buffer, producing an empty buffer::
+
+    subslice: 0, -30, truncate;
+
+However, a moderate negative ``nbytes`` works normally. For example,
+``subslice: 0, -8, truncate;`` ends 8 bytes from the end (position 8),
+producing ``This is`` (with a trailing space)::
+
+    subslice: 0, -8, truncate;
+
+Full Rule Examples
+~~~~~~~~~~~~~~~~~~
+
+The following rule inspects the first 4 bytes of the HTTP User-Agent
+header to match traffic with a User-Agent beginning with ``curl``:
+
+.. container:: example-rule
+
+  alert http any any -> any any (msg:"curl User-Agent"; :example-rule-emphasis:`http.user_agent; subslice: 0, 4, truncate; content:"curl";` bsize:4; sid:1;)
+
+The following rule inspects the last 4 bytes of the HTTP URI to match
+requests whose URI ends with ``.php``:
+
+.. container:: example-rule
+
+  alert http any any -> any any (msg:"PHP URI"; :example-rule-emphasis:`http.uri; subslice: -4; content:".php";` bsize:4; sid:2;)

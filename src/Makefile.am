@@ -117,9 +117,6 @@ noinst_HEADERS = \
 	detect-csum.h \
 	detect-datarep.h \
 	detect-dataset.h \
-	detect-dce-iface.h \
-	detect-dce-opnum.h \
-	detect-dce-stub-data.h \
 	detect-depth.h \
 	detect-detection-filter.h \
 	detect-distance.h \
@@ -136,7 +133,6 @@ noinst_HEADERS = \
 	detect-engine-buffer.h \
 	detect-engine-build.h \
 	detect-engine-content-inspection.h \
-	detect-engine-dcepayload.h \
 	detect-engine-event.h \
 	detect-engine-file.h \
 	detect-engine-frame.h \
@@ -699,9 +695,6 @@ libsuricata_c_a_SOURCES = \
 	detect-csum.c \
 	detect-datarep.c \
 	detect-dataset.c \
-	detect-dce-iface.c \
-	detect-dce-opnum.c \
-	detect-dce-stub-data.c \
 	detect-depth.c \
 	detect-detection-filter.c \
 	detect-distance.c \
@@ -718,7 +711,6 @@ libsuricata_c_a_SOURCES = \
 	detect-engine-buffer.c \
 	detect-engine-build.c \
 	detect-engine-content-inspection.c \
-	detect-engine-dcepayload.c \
 	detect-engine-event.c \
 	detect-engine-file.c \
 	detect-engine-frame.c \

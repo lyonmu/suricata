@@ -52,7 +52,7 @@ void DetectIpv6hdrRegister(void)
 {
     sigmatch_table[DETECT_IPV6HDR].name = "ipv6.hdr";
     sigmatch_table[DETECT_IPV6HDR].desc = "sticky buffer to match on the IPV6 header";
-    sigmatch_table[DETECT_IPV6HDR].url = "/rules/header-keywords.html#ipv6hdr";
+    sigmatch_table[DETECT_IPV6HDR].url = "/rules/header-keywords.html#ipv6-hdr";
     sigmatch_table[DETECT_IPV6HDR].Setup = DetectIpv6hdrSetup;
     sigmatch_table[DETECT_IPV6HDR].flags |= SIGMATCH_NOOPT | SIGMATCH_INFO_STICKY_BUFFER;
 #ifdef UNITTESTS
@@ -96,7 +96,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         if (!PacketIsIPv6(p)) {
             return NULL;
@@ -115,7 +115,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = hlen;
         const uint8_t *data = (const uint8_t *)ip6h;
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
 

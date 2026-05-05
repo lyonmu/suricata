@@ -173,7 +173,9 @@ unsafe extern "C" fn dns_opcode_free(_de: *mut DetectEngineCtx, ctx: *mut c_void
     SCDetectU8Free(ctx);
 }
 
-unsafe extern "C" fn dns_rcode_parse(ustr: *const std::os::raw::c_char) -> *mut DetectUintData<u16> {
+unsafe extern "C" fn dns_rcode_parse(
+    ustr: *const std::os::raw::c_char,
+) -> *mut DetectUintData<u16> {
     let ft_name: &CStr = CStr::from_ptr(ustr); //unsafe
     if let Ok(s) = ft_name.to_str() {
         if let Some(ctx) = detect_parse_uint_enum::<u16, DNSRcode>(s) {
@@ -358,7 +360,7 @@ pub unsafe extern "C" fn SCDetectDNSRegister() {
     let kw = SigTableElmtStickyBuffer {
         name: String::from("dns.answer.name"),
         desc: String::from("DNS answer name sticky buffer"),
-        url: String::from("/rules/dns-keywords.html#dns-answer-name"),
+        url: String::from("/rules/dns-keywords.html#dns-answers-rrname"),
         setup: dns_detect_answer_name_setup,
     };
     let _g_dns_answer_name_kw_id = helper_keyword_register_multi_buffer(&kw);
@@ -375,7 +377,7 @@ pub unsafe extern "C" fn SCDetectDNSRegister() {
     let kw = SCSigTableAppLiteElmt {
         name: b"dns.opcode\0".as_ptr() as *const libc::c_char,
         desc: b"Match the DNS header opcode flag.\0".as_ptr() as *const libc::c_char,
-        url: b"rules/dns-keywords.html#dns-opcode\0".as_ptr() as *const libc::c_char,
+        url: b"/rules/dns-keywords.html#dns-opcode\0".as_ptr() as *const libc::c_char,
         AppLayerTxMatch: Some(dns_opcode_match),
         Setup: Some(dns_opcode_setup),
         Free: Some(dns_opcode_free),
@@ -391,7 +393,7 @@ pub unsafe extern "C" fn SCDetectDNSRegister() {
     let kw = SigTableElmtStickyBuffer {
         name: String::from("dns.query.name"),
         desc: String::from("DNS query name sticky buffer"),
-        url: String::from("/rules/dns-keywords.html#dns-query-name"),
+        url: String::from("/rules/dns-keywords.html#dns-queries-rrname"),
         setup: dns_detect_query_name_setup,
     };
     let _g_dns_query_name_kw_id = helper_keyword_register_multi_buffer(&kw);
@@ -408,7 +410,7 @@ pub unsafe extern "C" fn SCDetectDNSRegister() {
     let kw = SCSigTableAppLiteElmt {
         name: b"dns.rcode\0".as_ptr() as *const libc::c_char,
         desc: b"Match the DNS header rcode flag.\0".as_ptr() as *const libc::c_char,
-        url: b"rules/dns-keywords.html#dns-rcode\0".as_ptr() as *const libc::c_char,
+        url: b"/rules/dns-keywords.html#dns-rcode\0".as_ptr() as *const libc::c_char,
         AppLayerTxMatch: Some(dns_rcode_match),
         Setup: Some(dns_rcode_setup),
         Free: Some(dns_rcode_free),
@@ -424,7 +426,7 @@ pub unsafe extern "C" fn SCDetectDNSRegister() {
     let kw = SCSigTableAppLiteElmt {
         name: b"dns.rrtype\0".as_ptr() as *const libc::c_char,
         desc: b"Match the DNS rrtype in message body.\0".as_ptr() as *const libc::c_char,
-        url: b"rules/dns-keywords.html#dns-rrtype\0".as_ptr() as *const libc::c_char,
+        url: b"/rules/dns-keywords.html#dns-rrtype\0".as_ptr() as *const libc::c_char,
         AppLayerTxMatch: Some(dns_rrtype_match),
         Setup: Some(dns_rrtype_setup),
         Free: Some(dns_rrtype_free),

@@ -70,10 +70,10 @@ unsafe extern "C" fn smb_tx_get_named_pipe(
     return false;
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn SCSmbTxGetStubData(
-    tx: &SMBTransaction, direction: u8, buffer: *mut *const u8, buffer_len: *mut u32,
-) -> u8 {
+pub(crate) unsafe extern "C" fn smb_tx_get_stub_data(
+    tx: *const c_void, direction: u8, buffer: *mut *const u8, buffer_len: *mut u32,
+) -> bool {
+    let tx = cast_pointer!(tx, SMBTransaction);
     if let Some(SMBTransactionTypeData::DCERPC(ref x)) = tx.type_data {
         let vref = if direction == Direction::ToServer as u8 {
             &x.stub_data_ts
@@ -83,27 +83,40 @@ pub unsafe extern "C" fn SCSmbTxGetStubData(
         if !vref.is_empty() {
             *buffer = vref.as_ptr();
             *buffer_len = vref.len() as u32;
-            return 1;
+            return true;
         }
     }
 
     *buffer = ptr::null();
     *buffer_len = 0;
-    return 0;
+    return false;
 }
 
-#[no_mangle]
-pub extern "C" fn SCSmbTxMatchDceOpnum(tx: &SMBTransaction, dce_data: &mut DCEOpnumData) -> u8 {
-    SCLogDebug!("SCSmbTxMatchDceOpnum: start");
+pub(crate) unsafe extern "C" fn smb_tx_match_dce_opnum(
+    tx: *mut c_void, ctx: *const SigMatchCtx,
+) -> u8 {
+    let tx = cast_pointer!(tx, SMBTransaction);
+    let dce_data = cast_pointer!(ctx, DCEOpnumData);
+
+    SCLogDebug!("smb_tx_match_dce_opnum: start");
     if let Some(SMBTransactionTypeData::DCERPC(ref x)) = tx.type_data {
         if x.req_cmd == DCERPC_TYPE_REQUEST {
-            for range in dce_data.data.iter() {
-                if range.range2 == DETECT_DCE_OPNUM_RANGE_UNINITIALIZED {
-                    if range.range1 == x.opnum as u32 {
+            match dce_data {
+                DCEOpnumData::Num(ref num_data) => {
+                    if detect_match_uint(num_data, x.opnum) {
                         return 1;
                     }
-                } else if range.range1 <= x.opnum as u32 && range.range2 >= x.opnum as u32 {
-                    return 1;
+                }
+                DCEOpnumData::Ranges(ref ranges_data) => {
+                    for range in ranges_data.data.iter() {
+                        if range.range2 == DETECT_DCE_OPNUM_RANGE_UNINITIALIZED {
+                            if range.range1 == x.opnum as u32 {
+                                return 1;
+                            }
+                        } else if range.range1 <= x.opnum as u32 && range.range2 >= x.opnum as u32 {
+                            return 1;
+                        }
+                    }
                 }
             }
         }
@@ -116,10 +129,13 @@ pub extern "C" fn SCSmbTxMatchDceOpnum(tx: &SMBTransaction, dce_data: &mut DCEOp
  * - match on REQUEST (so not on BIND/BINDACK (probably for mixing with
  *                     dce_opnum and dce_stub_data)
  * - only match on approved ifaces (so ack_result == 0) */
-#[no_mangle]
-pub extern "C" fn SCSmbTxGetDceIface(
-    state: &mut SMBState, tx: &SMBTransaction, dce_data: &mut DCEIfaceData,
-) -> u8 {
+pub(crate) unsafe fn smb_tx_match_dce_iface(
+    state: *mut c_void, tx: *mut c_void, dce_data: *const SigMatchCtx,
+) -> c_int {
+    let tx = cast_pointer!(tx, SMBTransaction);
+    let state = cast_pointer!(state, SMBState);
+    let dce_data = cast_pointer!(dce_data, DCEIfaceData);
+
     let if_uuid = dce_data.if_uuid.as_slice();
     let is_dcerpc_request = match tx.type_data {
         Some(SMBTransactionTypeData::DCERPC(ref x)) => x.req_cmd == DCERPC_TYPE_REQUEST,

@@ -69,7 +69,7 @@ void DetectJa4HashRegister(void)
     sigmatch_table[DETECT_JA4_HASH].name = "ja4.hash";
     sigmatch_table[DETECT_JA4_HASH].alias = "ja4_hash";
     sigmatch_table[DETECT_JA4_HASH].desc = "sticky buffer to match the JA4 hash buffer";
-    sigmatch_table[DETECT_JA4_HASH].url = "/rules/ja4-keywords.html#ja4-hash";
+    sigmatch_table[DETECT_JA4_HASH].url = "/rules/ja-keywords.html#ja4-hash";
 #ifdef HAVE_JA4
     sigmatch_table[DETECT_JA4_HASH].Setup = DetectJa4HashSetup;
 #ifdef UNITTESTS
@@ -140,7 +140,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const DetectEngineTransforms *transforms, Flow *f, const uint8_t flow_flags, void *txv,
         const int list_id)
 {
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         const SSLState *ssl_state = (SSLState *)f->alstate;
 
@@ -163,7 +163,7 @@ static InspectionBuffer *Ja4DetectGetHash(DetectEngineThreadCtx *det_ctx,
         const DetectEngineTransforms *transforms, Flow *_f, const uint8_t _flow_flags, void *txv,
         const int list_id)
 {
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         uint32_t b_len = 0;
         const uint8_t *b = NULL;

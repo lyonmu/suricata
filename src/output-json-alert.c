@@ -28,6 +28,7 @@
 #include "packet.h"
 #include "detect.h"
 #include "flow.h"
+#include "flow-bindgen.h"
 #include "conf.h"
 
 #include "stream.h"
@@ -322,7 +323,7 @@ static void AlertAddPayload(AlertJsonOutputCtx *json_output_ctx, SCJsonBuilder *
 static void AlertAddAppLayer(
         const Packet *p, SCJsonBuilder *jb, const uint64_t tx_id, const uint16_t option_flags)
 {
-    const AppProto proto = FlowGetAppProtocol(p->flow);
+    const AppProto proto = SCFlowGetAppProtocol(p->flow);
     EveJsonSimpleAppLayerLogger *al = SCEveJsonSimpleGetLogger(proto);
     SCJsonBuilderMark mark = { 0, 0, 0 };
     if (al && al->LogTx) {
@@ -553,11 +554,11 @@ void EveAddVerdict(SCJsonBuilder *jb, const Packet *p, const uint8_t alert_actio
             JB_SET_STRING(jb, "action", "alert");
         }
         if (packet_action & ACTION_REJECT) {
-            JB_SET_STRING(jb, "reject-target", "to_client");
+            JB_SET_STRING(jb, "reject_target", "to_client");
         } else if (packet_action & ACTION_REJECT_DST) {
-            JB_SET_STRING(jb, "reject-target", "to_server");
+            JB_SET_STRING(jb, "reject_target", "to_server");
         } else if (packet_action & ACTION_REJECT_BOTH) {
-            JB_SET_STRING(jb, "reject-target", "both");
+            JB_SET_STRING(jb, "reject_target", "both");
         }
         SCJbOpenArray(jb, "reject");
         switch (p->proto) {
@@ -668,7 +669,7 @@ static int AlertJson(ThreadVars *tv, JsonAlertLogThread *aft, const Packet *p)
         char xff_buffer[XFF_MAXLEN];
         xff_buffer[0] = 0;
         if ((xff_cfg != NULL) && !(xff_cfg->flags & XFF_DISABLED) && p->flow != NULL) {
-            if (FlowGetAppProtocol(p->flow) == ALPROTO_HTTP1) {
+            if (SCFlowGetAppProtocol(p->flow) == ALPROTO_HTTP1) {
                 if (pa->flags & PACKET_ALERT_FLAG_TX) {
                     have_xff_ip = HttpXFFGetIPFromTx(p->flow, pa->tx_id, xff_cfg,
                             xff_buffer, XFF_MAXLEN);

@@ -81,7 +81,7 @@ void DetectTlsJa3SStringRegister(void)
 {
     sigmatch_table[DETECT_TLS_JA3S_STRING].name = "ja3s.string";
     sigmatch_table[DETECT_TLS_JA3S_STRING].desc = "sticky buffer to match the JA3S string buffer";
-    sigmatch_table[DETECT_TLS_JA3S_STRING].url = "/rules/ja3-keywords.html#ja3s-string";
+    sigmatch_table[DETECT_TLS_JA3S_STRING].url = "/rules/ja-keywords.html#ja3s-string";
 #ifdef HAVE_JA3
     sigmatch_table[DETECT_TLS_JA3S_STRING].Setup = DetectTlsJa3SStringSetup;
 #else  /* HAVE_JA3 */
@@ -149,7 +149,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const DetectEngineTransforms *transforms, Flow *f,
         const uint8_t flow_flags, void *txv, const int list_id)
 {
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         const SSLState *ssl_state = (SSLState *)f->alstate;
 
@@ -161,7 +161,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = (uint32_t)strlen(ssl_state->server_connp.ja3_str->data);
         const uint8_t *data = (uint8_t *)ssl_state->server_connp.ja3_str->data;
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
 

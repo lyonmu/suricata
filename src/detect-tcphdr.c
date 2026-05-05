@@ -52,7 +52,7 @@ void DetectTcphdrRegister(void)
 {
     sigmatch_table[DETECT_TCPHDR].name = "tcp.hdr";
     sigmatch_table[DETECT_TCPHDR].desc = "sticky buffer to match on the TCP header";
-    sigmatch_table[DETECT_TCPHDR].url = "/rules/header-keywords.html#tcphdr";
+    sigmatch_table[DETECT_TCPHDR].url = "/rules/header-keywords.html#tcp-hdr";
     sigmatch_table[DETECT_TCPHDR].Setup = DetectTcphdrSetup;
     sigmatch_table[DETECT_TCPHDR].flags |= SIGMATCH_NOOPT | SIGMATCH_INFO_STICKY_BUFFER;
 #ifdef UNITTESTS
@@ -97,7 +97,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect == NULL) {
         if (!PacketIsTCP(p)) {
             // may happen when DecodeTCPPacket fails
@@ -116,7 +116,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = hlen;
         const uint8_t *data = (const uint8_t *)tcph;
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
 

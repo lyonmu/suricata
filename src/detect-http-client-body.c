@@ -88,7 +88,7 @@ void DetectHttpClientBodyRegister(void)
     sigmatch_table[DETECT_HTTP_CLIENT_BODY].name = "http_client_body";
     sigmatch_table[DETECT_HTTP_CLIENT_BODY].desc =
             "content modifier to match only on HTTP request-body";
-    sigmatch_table[DETECT_HTTP_CLIENT_BODY].url = "/rules/http-keywords.html#http-client-body";
+    sigmatch_table[DETECT_HTTP_CLIENT_BODY].url = "/rules/http-keywords.html#http-request-body";
     sigmatch_table[DETECT_HTTP_CLIENT_BODY].Setup = DetectHttpClientBodySetup;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_HTTP_CLIENT_BODY].RegisterTests = DetectHttpClientBodyRegisterTests;
@@ -100,7 +100,7 @@ void DetectHttpClientBodyRegister(void)
     /* http.request_body sticky buffer */
     sigmatch_table[DETECT_HTTP_REQUEST_BODY].name = "http.request_body";
     sigmatch_table[DETECT_HTTP_REQUEST_BODY].desc = "sticky buffer to match the HTTP request body buffer";
-    sigmatch_table[DETECT_HTTP_REQUEST_BODY].url = "/rules/http-keywords.html#http-client-body";
+    sigmatch_table[DETECT_HTTP_REQUEST_BODY].url = "/rules/http-keywords.html#http-request-body";
     sigmatch_table[DETECT_HTTP_REQUEST_BODY].Setup = DetectHttpClientBodySetupSticky;
     sigmatch_table[DETECT_HTTP_REQUEST_BODY].flags |= SIGMATCH_NOOPT;
     sigmatch_table[DETECT_HTTP_REQUEST_BODY].flags |= SIGMATCH_INFO_STICKY_BUFFER;
@@ -201,7 +201,7 @@ static void PrefilterMpmHttpRequestBodyFree(void *ptr)
 static inline InspectionBuffer *HttpRequestBodyXformsGetDataCallback(DetectEngineThreadCtx *det_ctx,
         const DetectEngineTransforms *transforms, const int list_id, InspectionBuffer *base_buffer)
 {
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (buffer->inspect != NULL)
         return buffer;
 
@@ -218,7 +218,7 @@ static InspectionBuffer *HttpRequestBodyGetDataCallback(DetectEngineThreadCtx *d
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, base_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, base_id);
     if (base_id != list_id && buffer->inspect != NULL)
         return HttpRequestBodyXformsGetDataCallback(det_ctx, transforms, list_id, buffer);
     else if (buffer->inspect != NULL)

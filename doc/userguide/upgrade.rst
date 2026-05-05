@@ -55,6 +55,12 @@ Logging Changes
   E.g., previously, ``ether_type`` values were logged in host order;  an ethertype value of ``0xfbb7``
   (network order) was logged as `47099`` (``0xb7fb``). This ethertype value will be logged as ``64439``.
 
+- Alert verdict key is changed from to ``reject-target`` to ``reject_target``
+
+- App-layer stats protocols names replace dash by underscore, meaning
+  ``stats.app_layer.*.ftp-data`` becomes ``stats.app_layer.*.ftp_data``,
+  and same for bittorrent_dht
+
 Other Changes
 ~~~~~~~~~~~~~
 - ``engine-analysis`` output has been changed for keywords that now use the generic integers framework

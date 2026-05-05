@@ -91,7 +91,7 @@ void DetectHttpUriRegister (void)
     sigmatch_table[DETECT_HTTP_URI_CM].name = "http_uri";
     sigmatch_table[DETECT_HTTP_URI_CM].desc =
             "content modifier to match specifically and only on the HTTP uri-buffer";
-    sigmatch_table[DETECT_HTTP_URI_CM].url = "/rules/http-keywords.html#http-uri-and-http-uri-raw";
+    // no doc url for this obsolete keyword, see http.uri
     sigmatch_table[DETECT_HTTP_URI_CM].Setup = DetectHttpUriSetup;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_HTTP_URI_CM].RegisterTests = DetectHttpUriRegisterTests;
@@ -103,7 +103,7 @@ void DetectHttpUriRegister (void)
     sigmatch_table[DETECT_HTTP_URI].name = "http.uri";
     sigmatch_table[DETECT_HTTP_URI].alias = "http.uri.normalized";
     sigmatch_table[DETECT_HTTP_URI].desc = "sticky buffer to match specifically and only on the normalized HTTP URI buffer";
-    sigmatch_table[DETECT_HTTP_URI].url = "/rules/http-keywords.html#http-uri-and-http-uri-raw";
+    sigmatch_table[DETECT_HTTP_URI].url = "/rules/http-keywords.html#http-uri";
     sigmatch_table[DETECT_HTTP_URI].Setup = DetectHttpUriSetupSticky;
     sigmatch_table[DETECT_HTTP_URI].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -114,10 +114,10 @@ void DetectHttpUriRegister (void)
             GetData, ALPROTO_HTTP1, HTP_REQUEST_PROGRESS_LINE);
 
     DetectAppLayerInspectEngineRegister("http_uri", ALPROTO_HTTP2, SIG_FLAG_TOSERVER,
-            HTTP2StateDataClient, DetectEngineInspectBufferGeneric, GetData2);
+            HTTP2StateOpen, DetectEngineInspectBufferGeneric, GetData2);
 
     DetectAppLayerMpmRegister("http_uri", SIG_FLAG_TOSERVER, 2, PrefilterGenericMpmRegister,
-            GetData2, ALPROTO_HTTP2, HTTP2StateDataClient);
+            GetData2, ALPROTO_HTTP2, HTTP2StateOpen);
 
     DetectBufferTypeSetDescriptionByName("http_uri",
             "http request uri");
@@ -132,7 +132,7 @@ void DetectHttpUriRegister (void)
     /* http_raw_uri content modifier */
     sigmatch_table[DETECT_HTTP_RAW_URI].name = "http_raw_uri";
     sigmatch_table[DETECT_HTTP_RAW_URI].desc = "content modifier to match on the raw HTTP uri";
-    sigmatch_table[DETECT_HTTP_RAW_URI].url = "/rules/http-keywords.html#http_uri-and-http_raw-uri";
+    // no doc url for this obsolete keyword, see http.uri.raw
     sigmatch_table[DETECT_HTTP_RAW_URI].Setup = DetectHttpRawUriSetup;
     sigmatch_table[DETECT_HTTP_RAW_URI].flags |= SIGMATCH_NOOPT | SIGMATCH_INFO_CONTENT_MODIFIER;
     sigmatch_table[DETECT_HTTP_RAW_URI].alternative = DETECT_HTTP_URI_RAW;
@@ -140,7 +140,7 @@ void DetectHttpUriRegister (void)
     /* http.uri.raw sticky buffer */
     sigmatch_table[DETECT_HTTP_URI_RAW].name = "http.uri.raw";
     sigmatch_table[DETECT_HTTP_URI_RAW].desc = "sticky buffer to match specifically and only on the raw HTTP URI buffer";
-    sigmatch_table[DETECT_HTTP_URI_RAW].url = "/rules/http-keywords.html#http-uri-and-http-raw-uri";
+    sigmatch_table[DETECT_HTTP_URI_RAW].url = "/rules/http-keywords.html#http-uri-raw";
     sigmatch_table[DETECT_HTTP_URI_RAW].Setup = DetectHttpRawUriSetupSticky;
     sigmatch_table[DETECT_HTTP_URI_RAW].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
 
@@ -152,10 +152,10 @@ void DetectHttpUriRegister (void)
 
     // no difference between raw and decoded uri for HTTP2
     DetectAppLayerInspectEngineRegister("http_raw_uri", ALPROTO_HTTP2, SIG_FLAG_TOSERVER,
-            HTTP2StateDataClient, DetectEngineInspectBufferGeneric, GetData2);
+            HTTP2StateOpen, DetectEngineInspectBufferGeneric, GetData2);
 
     DetectAppLayerMpmRegister("http_raw_uri", SIG_FLAG_TOSERVER, 2, PrefilterGenericMpmRegister,
-            GetData2, ALPROTO_HTTP2, HTTP2StateDataClient);
+            GetData2, ALPROTO_HTTP2, HTTP2StateOpen);
 
     DetectBufferTypeSetDescriptionByName("http_raw_uri",
             "raw http uri");
@@ -216,7 +216,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (!buffer->initialized) {
         htp_tx_t *tx = (htp_tx_t *)txv;
         bstr *request_uri_normalized = (bstr *)htp_tx_normalized_uri(tx);
@@ -226,7 +226,7 @@ static InspectionBuffer *GetData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = (uint32_t)bstr_len(request_uri_normalized);
         const uint8_t *data = bstr_ptr(request_uri_normalized);
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
 
@@ -239,7 +239,7 @@ static InspectionBuffer *GetData2(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (!buffer->initialized) {
         uint32_t b_len = 0;
         const uint8_t *b = NULL;
@@ -249,7 +249,7 @@ static InspectionBuffer *GetData2(DetectEngineThreadCtx *det_ctx,
         if (b == NULL || b_len == 0)
             return NULL;
 
-        InspectionBufferSetupAndApplyTransforms(det_ctx, list_id, buffer, b, b_len, transforms);
+        SCInspectionBufferSetupAndApplyTransforms(det_ctx, list_id, buffer, b, b_len, transforms);
     }
 
     return buffer;
@@ -302,7 +302,7 @@ static InspectionBuffer *GetRawData(DetectEngineThreadCtx *det_ctx,
 {
     SCEnter();
 
-    InspectionBuffer *buffer = InspectionBufferGet(det_ctx, list_id);
+    InspectionBuffer *buffer = SCInspectionBufferGet(det_ctx, list_id);
     if (!buffer->initialized) {
         htp_tx_t *tx = (htp_tx_t *)txv;
         if (unlikely(htp_tx_request_uri(tx) == NULL)) {
@@ -311,7 +311,7 @@ static InspectionBuffer *GetRawData(DetectEngineThreadCtx *det_ctx,
         const uint32_t data_len = (uint32_t)bstr_len(htp_tx_request_uri(tx));
         const uint8_t *data = bstr_ptr(htp_tx_request_uri(tx));
 
-        InspectionBufferSetupAndApplyTransforms(
+        SCInspectionBufferSetupAndApplyTransforms(
                 det_ctx, list_id, buffer, data, data_len, transforms);
     }
 
