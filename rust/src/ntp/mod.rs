@@ -21,4 +21,5 @@
 
 pub mod detect;
 pub mod log;
+pub mod lua;
 pub mod ntp;
