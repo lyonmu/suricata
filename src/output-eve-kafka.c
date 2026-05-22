@@ -57,6 +57,8 @@ static void KafkaDeliveryReportCallback(rd_kafka_t *rk, const rd_kafka_message_t
 static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, const char *buf);
 static void KafkaFreeConfig(KafkaSetup *setup);
 static bool KafkaQueueFullRetryBudget(const uint32_t retry_count);
+static inline bool KafkaShouldRetryQueueFull(
+        const rd_kafka_resp_err_t ret, const uint32_t retry_count);
 static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
         const bool is_final_drain);
 
@@ -94,6 +96,12 @@ static bool KafkaQueueFullRetryBudget(const uint32_t retry_count)
     return retry_count < KAFKA_QUEUE_FULL_RETRY_MAX;
 }
 
+static inline bool KafkaShouldRetryQueueFull(
+        const rd_kafka_resp_err_t ret, const uint32_t retry_count)
+{
+    return ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retry_count);
+}
+
 static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
         const bool is_final_drain)
 {
@@ -108,7 +116,7 @@ static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_
             return 0;
         }
 
-        if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retries)) {
+        if (KafkaShouldRetryQueueFull(ret, retries)) {
             retries++;
             rd_kafka_poll(ctx->rk, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
             continue;
@@ -116,11 +124,12 @@ static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_
 
         if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
             if (is_final_drain) {
-                SCLogWarning("Kafka internal queue full after %u retries in final drain, "
-                             "dropping message", retries);
+                SCLogWarning("Kafka internal queue full after %u/%u retries in final drain, "
+                             "dropping message",
+                        retries, KAFKA_QUEUE_FULL_RETRY_MAX);
             } else {
-                SCLogWarning("Kafka internal queue full after %u retries, dropping message",
-                        retries);
+                SCLogWarning("Kafka internal queue full after %u/%u retries, dropping message",
+                        retries, KAFKA_QUEUE_FULL_RETRY_MAX);
             }
         } else if (is_final_drain) {
             SCLogError("Failed to produce final message: %s", rd_kafka_err2str(ret));
@@ -943,7 +952,10 @@ static void *KafkaProducerThread(void *arg)
 
         /* Try to get message from ring buffer */
         if (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-            (void)KafkaProduceWithRetry(ctx, entry.data, entry.len, false);
+            int produce_ret = KafkaProduceWithRetry(ctx, entry.data, entry.len, false);
+            if (produce_ret != 0) {
+                /* Helper logs and drop accounting are already handled. */
+            }
         } else {
             /* No message available - sleep briefly to avoid busy-wait */
             usleep(1000);
@@ -958,7 +970,10 @@ static void *KafkaProducerThread(void *arg)
     /* Drain ring buffer - get all remaining messages */
     SCEveKafkaRingBufferEntry entry;
     while (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-        (void)KafkaProduceWithRetry(ctx, entry.data, entry.len, true);
+        int produce_ret = KafkaProduceWithRetry(ctx, entry.data, entry.len, true);
+        if (produce_ret != 0) {
+            /* Helper logs and drop accounting are already handled. */
+        }
     }
 
     /* Wait for librdkafka internal queue to drain */
@@ -1396,6 +1411,17 @@ static int KafkaTestQueueFullRetryBudget(void)
     PASS;
 }
 
+static int KafkaTestShouldRetryQueueFull(void)
+{
+    FAIL_IF_NOT(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__QUEUE_FULL, 0));
+    FAIL_IF_NOT(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__QUEUE_FULL, 1));
+    FAIL_IF_NOT(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__QUEUE_FULL, 2));
+    FAIL_IF(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__QUEUE_FULL, 3));
+    FAIL_IF(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__QUEUE_FULL, 4));
+    FAIL_IF(KafkaShouldRetryQueueFull(RD_KAFKA_RESP_ERR__UNKNOWN_TOPIC, 0));
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1444,6 +1470,7 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestParseConfigValidRetryBackoffZero",
             KafkaTestParseConfigValidRetryBackoffZero);
     UtRegisterTest("KafkaTestQueueFullRetryBudget", KafkaTestQueueFullRetryBudget);
+    UtRegisterTest("KafkaTestShouldRetryQueueFull", KafkaTestShouldRetryQueueFull);
 #endif
 }
 
