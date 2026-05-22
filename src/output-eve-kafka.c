@@ -48,12 +48,17 @@
 #endif
 
 #define OUTPUT_NAME "kafka"
+#define KAFKA_QUEUE_FULL_RETRY_MAX 3
+#define KAFKA_QUEUE_FULL_RETRY_POLL_MS 10
 
 /* Forward declarations */
 static void *KafkaProducerThread(void *arg);
 static void KafkaDeliveryReportCallback(rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque);
 static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, const char *buf);
 static void KafkaFreeConfig(KafkaSetup *setup);
+static bool KafkaQueueFullRetryBudget(const uint32_t retry_count);
+static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
+        const bool is_final_drain);
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
 {
@@ -82,6 +87,51 @@ static int KafkaValidateIntGreaterThanZero(const char *name, const intmax_t valu
         return -1;
     }
     return 0;
+}
+
+static bool KafkaQueueFullRetryBudget(const uint32_t retry_count)
+{
+    return retry_count < KAFKA_QUEUE_FULL_RETRY_MAX;
+}
+
+static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
+        const bool is_final_drain)
+{
+    uint32_t retries = 0;
+
+    while (1) {
+        rd_kafka_resp_err_t ret = rd_kafka_producev(ctx->rk, RD_KAFKA_V_TOPIC(ctx->setup.topic),
+                RD_KAFKA_V_VALUE(data, len), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_FREE),
+                RD_KAFKA_V_KEY(NULL, 0), RD_KAFKA_V_END);
+
+        if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
+            return 0;
+        }
+
+        if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retries)) {
+            retries++;
+            rd_kafka_poll(ctx->rk, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
+            continue;
+        }
+
+        if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+            if (is_final_drain) {
+                SCLogWarning("Kafka internal queue full after %u retries in final drain, "
+                             "dropping message", retries);
+            } else {
+                SCLogWarning("Kafka internal queue full after %u retries, dropping message",
+                        retries);
+            }
+        } else if (is_final_drain) {
+            SCLogError("Failed to produce final message: %s", rd_kafka_err2str(ret));
+        } else {
+            SCLogError("Failed to produce message: %s", rd_kafka_err2str(ret));
+        }
+
+        SCFree(data);
+        SC_ATOMIC_ADD(ctx->messages_dropped, 1);
+        return -1;
+    }
 }
 
 /**
@@ -893,28 +943,7 @@ static void *KafkaProducerThread(void *arg)
 
         /* Try to get message from ring buffer */
         if (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-            /* Produce message to Kafka immediately */
-            rd_kafka_resp_err_t ret = rd_kafka_producev(ctx->rk,
-                RD_KAFKA_V_TOPIC(ctx->setup.topic),
-                RD_KAFKA_V_VALUE(entry.data, entry.len),
-                RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_FREE),
-                RD_KAFKA_V_KEY(NULL, 0),
-                RD_KAFKA_V_END);
-
-            if (ret != RD_KAFKA_RESP_ERR_NO_ERROR) {
-                if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
-                    /* Internal queue is full - poll to make room */
-                    rd_kafka_poll(ctx->rk, 0);
-                    SCLogWarning("Kafka internal queue full, dropping message");
-                    SCFree(entry.data);
-                    SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-                } else {
-                    SCLogError("Failed to produce message: %s", rd_kafka_err2str(ret));
-                    SCFree(entry.data);
-                    SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-                }
-            }
-            /* On success, librdkafka owns entry.data via RD_KAFKA_MSG_F_FREE */
+            (void)KafkaProduceWithRetry(ctx, entry.data, entry.len, false);
         } else {
             /* No message available - sleep briefly to avoid busy-wait */
             usleep(1000);
@@ -929,18 +958,7 @@ static void *KafkaProducerThread(void *arg)
     /* Drain ring buffer - get all remaining messages */
     SCEveKafkaRingBufferEntry entry;
     while (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-        rd_kafka_resp_err_t ret = rd_kafka_producev(ctx->rk,
-            RD_KAFKA_V_TOPIC(ctx->setup.topic),
-            RD_KAFKA_V_VALUE(entry.data, entry.len),
-            RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_FREE),
-            RD_KAFKA_V_KEY(NULL, 0),
-            RD_KAFKA_V_END);
-
-        if (ret != RD_KAFKA_RESP_ERR_NO_ERROR) {
-            SCLogError("Failed to produce final message: %s", rd_kafka_err2str(ret));
-            SCFree(entry.data);
-            SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-        }
+        (void)KafkaProduceWithRetry(ctx, entry.data, entry.len, true);
     }
 
     /* Wait for librdkafka internal queue to drain */
@@ -1368,6 +1386,16 @@ static int KafkaTestParseConfigValidRetryBackoffZero(void)
     PASS;
 }
 
+static int KafkaTestQueueFullRetryBudget(void)
+{
+    FAIL_IF_NOT(KafkaQueueFullRetryBudget(0));
+    FAIL_IF_NOT(KafkaQueueFullRetryBudget(1));
+    FAIL_IF_NOT(KafkaQueueFullRetryBudget(2));
+    FAIL_IF(KafkaQueueFullRetryBudget(3));
+    FAIL_IF(KafkaQueueFullRetryBudget(4));
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1415,6 +1443,7 @@ void SCEveKafkaInitialize(void)
             KafkaTestParseConfigInvalidRetryBackoffOrder);
     UtRegisterTest("KafkaTestParseConfigValidRetryBackoffZero",
             KafkaTestParseConfigValidRetryBackoffZero);
+    UtRegisterTest("KafkaTestQueueFullRetryBudget", KafkaTestQueueFullRetryBudget);
 #endif
 }
 
