@@ -272,6 +272,7 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
     /* Numeric settings with defaults */
     setup->partition = -1;  /* Automatic partitioning */
     setup->ring_buffer_size = KAFKA_RING_BUFFER_SIZE_DEFAULT;
+    setup->ring_buffer_max_bytes = KAFKA_RING_BUFFER_MAX_BYTES;
 
     /* librdkafka internal queue settings with defaults */
     setup->queue_buffering_max_messages = KAFKA_QUEUE_BUFFERING_MAX_MSGS;
@@ -280,6 +281,9 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
     setup->socket_timeout_ms = KAFKA_SOCKET_TIMEOUT_MS;
     setup->metadata_max_age_ms = KAFKA_METADATA_MAX_AGE_MS;
     setup->retry_backoff_ms = KAFKA_RETRY_BACKOFF_MS;
+    setup->retry_backoff_max_ms = KAFKA_RETRY_BACKOFF_MAX_MS;
+    setup->reconnect_backoff_ms = KAFKA_RECONNECT_BACKOFF_MS;
+    setup->reconnect_backoff_max_ms = KAFKA_RECONNECT_BACKOFF_MAX_MS;
     setup->linger_ms = KAFKA_LINGER_MS;
 
     /* Security defaults */
@@ -305,6 +309,12 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
             goto error;
         }
         setup->ring_buffer_size = (int)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "ring-buffer-max-bytes", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("ring-buffer-max-bytes", intval) != 0) {
+            goto error;
+        }
+        setup->ring_buffer_max_bytes = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "queue-buffering-max-messages", &intval)) {
         if (KafkaValidateIntGreaterThanZero("queue-buffering-max-messages", intval) != 0) {
@@ -337,16 +347,47 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
         setup->metadata_max_age_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "retry-backoff-ms", &intval)) {
-        if (KafkaValidateInt("retry-backoff-ms", intval, 0) != 0) {
+        if (KafkaValidateIntGreaterThanZero("retry-backoff-ms", intval) != 0) {
             goto error;
         }
         setup->retry_backoff_ms = (int)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "retry-backoff-max-ms", &intval)) {
+        if (KafkaValidateInt("retry-backoff-max-ms", intval, 0) != 0) {
+            goto error;
+        }
+        setup->retry_backoff_max_ms = (int)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "reconnect-backoff-ms", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("reconnect-backoff-ms", intval) != 0) {
+            goto error;
+        }
+        setup->reconnect_backoff_ms = (int)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "reconnect-backoff-max-ms", &intval)) {
+        if (KafkaValidateIntGreaterThanZero("reconnect-backoff-max-ms", intval) != 0) {
+            goto error;
+        }
+        setup->reconnect_backoff_max_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "linger-ms", &intval)) {
         if (KafkaValidateInt("linger-ms", intval, 0) != 0) {
             goto error;
         }
         setup->linger_ms = (int)intval;
+    }
+
+    if (setup->reconnect_backoff_max_ms < setup->reconnect_backoff_ms) {
+        SCLogError("Kafka: invalid reconnect backoff configuration: reconnect-backoff-max-ms "
+                   "(%d) must be >= reconnect-backoff-ms (%d)",
+                setup->reconnect_backoff_max_ms, setup->reconnect_backoff_ms);
+        goto error;
+    }
+    if (setup->retry_backoff_max_ms < setup->retry_backoff_ms) {
+        SCLogError("Kafka: invalid retry backoff configuration: retry-backoff-max-ms (%d) "
+                   "must be >= retry-backoff-ms (%d)",
+                setup->retry_backoff_max_ms, setup->retry_backoff_ms);
+        goto error;
     }
 
     /* Security settings */
@@ -496,6 +537,24 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
     snprintf(buf, sizeof(buf), "%d", setup->retry_backoff_ms);
     if (rd_kafka_conf_set(conf, "retry.backoff.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set retry.backoff.ms: %s", errbuf);
+        rd_kafka_conf_destroy(conf);
+        return NULL;
+    }
+    snprintf(buf, sizeof(buf), "%d", setup->retry_backoff_max_ms);
+    if (rd_kafka_conf_set(conf, "retry.backoff.max.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+        SCLogError("Kafka: Failed to set retry.backoff.max.ms: %s", errbuf);
+        rd_kafka_conf_destroy(conf);
+        return NULL;
+    }
+    snprintf(buf, sizeof(buf), "%d", setup->reconnect_backoff_ms);
+    if (rd_kafka_conf_set(conf, "reconnect.backoff.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+        SCLogError("Kafka: Failed to set reconnect.backoff.ms: %s", errbuf);
+        rd_kafka_conf_destroy(conf);
+        return NULL;
+    }
+    snprintf(buf, sizeof(buf), "%d", setup->reconnect_backoff_max_ms);
+    if (rd_kafka_conf_set(conf, "reconnect.backoff.max.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+        SCLogError("Kafka: Failed to set reconnect.backoff.max.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
@@ -1123,11 +1182,28 @@ static int KafkaTestRingBufferOverflow(void)
     PASS;
 }
 
-static int KafkaTestParseConfigInvalidRingBufferSize(void)
+static int KafkaTestParseConfigDefaults(void)
 {
     SCConfNode *node = KafkaTestCreateBaseConfig();
     FAIL_IF_NULL(node);
-    FAIL_IF_NOT(SCConfSet("kafka.ring-buffer-size", "0"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
+    FAIL_IF(setup.ring_buffer_max_bytes != KAFKA_RING_BUFFER_MAX_BYTES);
+    FAIL_IF(setup.reconnect_backoff_ms != KAFKA_RECONNECT_BACKOFF_MS);
+    FAIL_IF(setup.reconnect_backoff_max_ms != KAFKA_RECONNECT_BACKOFF_MAX_MS);
+    FAIL_IF(setup.retry_backoff_max_ms != KAFKA_RETRY_BACKOFF_MAX_MS);
+    FAIL_IF(setup.queue_buffering_max_kbytes != KAFKA_QUEUE_BUFFERING_MAX_KBYTES);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigInvalidRingBufferMaxBytes(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.ring-buffer-max-bytes", "0"));
 
     KafkaSetup setup = { 0 };
     FAIL_IF(KafkaParseConfig(node, &setup) == 0);
@@ -1149,15 +1225,29 @@ static int KafkaTestParseConfigInvalidPartition(void)
     PASS;
 }
 
-static int KafkaTestParseConfigValidRetryBackoffZero(void)
+static int KafkaTestParseConfigInvalidReconnectBackoffOrder(void)
 {
     SCConfNode *node = KafkaTestCreateBaseConfig();
     FAIL_IF_NULL(node);
-    FAIL_IF_NOT(SCConfSet("kafka.retry-backoff-ms", "0"));
+    FAIL_IF_NOT(SCConfSet("kafka.reconnect-backoff-ms", "200"));
+    FAIL_IF_NOT(SCConfSet("kafka.reconnect-backoff-max-ms", "100"));
 
     KafkaSetup setup = { 0 };
-    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
-    FAIL_IF(setup.retry_backoff_ms != 0);
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigInvalidRetryBackoffOrder(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.retry-backoff-ms", "200"));
+    FAIL_IF_NOT(SCConfSet("kafka.retry-backoff-max-ms", "100"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
 
     KafkaTestDestroyBaseConfig(&setup);
     PASS;
@@ -1194,11 +1284,14 @@ void SCEveKafkaInitialize(void)
 #ifdef UNITTESTS
     UtRegisterTest("KafkaTestRingBufferBasic", KafkaTestRingBufferBasic);
     UtRegisterTest("KafkaTestRingBufferOverflow", KafkaTestRingBufferOverflow);
-    UtRegisterTest("KafkaTestParseConfigInvalidRingBufferSize",
-            KafkaTestParseConfigInvalidRingBufferSize);
+    UtRegisterTest("KafkaTestParseConfigDefaults", KafkaTestParseConfigDefaults);
+    UtRegisterTest("KafkaTestParseConfigInvalidRingBufferMaxBytes",
+            KafkaTestParseConfigInvalidRingBufferMaxBytes);
     UtRegisterTest("KafkaTestParseConfigInvalidPartition", KafkaTestParseConfigInvalidPartition);
-    UtRegisterTest("KafkaTestParseConfigValidRetryBackoffZero",
-            KafkaTestParseConfigValidRetryBackoffZero);
+    UtRegisterTest("KafkaTestParseConfigInvalidReconnectBackoffOrder",
+            KafkaTestParseConfigInvalidReconnectBackoffOrder);
+    UtRegisterTest("KafkaTestParseConfigInvalidRetryBackoffOrder",
+            KafkaTestParseConfigInvalidRetryBackoffOrder);
 #endif
 }
 

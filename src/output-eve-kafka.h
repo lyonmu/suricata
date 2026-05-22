@@ -33,14 +33,18 @@
 
 /* Default values for configuration */
 #define KAFKA_RING_BUFFER_SIZE_DEFAULT    65536    /* Ring buffer capacity (configurable) */
+#define KAFKA_RING_BUFFER_MAX_BYTES       67108864 /* Ring buffer max bytes (64MB) */
 
 /* librdkafka internal queue and performance settings */
 #define KAFKA_QUEUE_BUFFERING_MAX_MSGS    100000   /* Max messages in queue */
-#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES  1048576  /* Max queue size in KB (1GB) */
+#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES  131072   /* Max queue size in KB (128MB) */
 #define KAFKA_MESSAGE_TIMEOUT_MS          300000   /* Message timeout (5 min) */
 #define KAFKA_SOCKET_TIMEOUT_MS           30000    /* Socket timeout (30 sec) */
 #define KAFKA_METADATA_MAX_AGE_MS         300000   /* Metadata refresh interval (5 min) */
 #define KAFKA_RETRY_BACKOFF_MS            100      /* Retry backoff interval */
+#define KAFKA_RETRY_BACKOFF_MAX_MS        1000     /* Retry backoff max interval */
+#define KAFKA_RECONNECT_BACKOFF_MS        100      /* Reconnect backoff interval */
+#define KAFKA_RECONNECT_BACKOFF_MAX_MS    10000    /* Reconnect backoff max interval */
 /* Linger.ms is handled by librdkafka internally, no application batching needed */
 #define KAFKA_LINGER_MS                   5        /* Producer linger time (librdkafka handles batching) */
 
@@ -79,6 +83,7 @@ typedef struct KafkaSetup_ {
     KafkaAcksMode acks;              /* Acknowledgment mode */
     int partition;                   /* Topic partition count for auto-creation (-1=1, 0=1, N=N partitions) */
     int ring_buffer_size;            /* Local ring buffer capacity */
+    int ring_buffer_max_bytes;       /* Max bytes buffered in memory */
 
     /* librdkafka internal queue settings (batching handled by librdkafka) */
     int queue_buffering_max_messages;
@@ -87,6 +92,9 @@ typedef struct KafkaSetup_ {
     int socket_timeout_ms;
     int metadata_max_age_ms;
     int retry_backoff_ms;
+    int retry_backoff_max_ms;
+    int reconnect_backoff_ms;
+    int reconnect_backoff_max_ms;
     int linger_ms;                   /* librdkafka internal batching */
 
     /* Security settings */
