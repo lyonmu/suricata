@@ -89,8 +89,8 @@ static int KafkaValidateIntGreaterThanZero(const char *name, const intmax_t valu
  */
 static SCEveKafkaRingBuffer *RingBufferInit(uint32_t size, uint64_t max_bytes)
 {
-    if (size == 0 || max_bytes == 0) {
-        SCLogError("Ring buffer size and max bytes must be > 0");
+    if (size < 2 || max_bytes == 0) {
+        SCLogError("Ring buffer size must be >= 2 and max bytes must be > 0");
         return NULL;
     }
 
@@ -143,6 +143,7 @@ static int RingBufferPush(SCEveKafkaRingBuffer *rb, char *data, size_t len)
     while (next_head == rb->tail) {
         SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
         if (old_entry->data != NULL) {
+            DEBUG_VALIDATE_BUG_ON(rb->current_bytes < old_entry->len);
             rb->current_bytes -= old_entry->len;
             SCFree(old_entry->data);
             old_entry->data = NULL;
@@ -157,6 +158,7 @@ static int RingBufferPush(SCEveKafkaRingBuffer *rb, char *data, size_t len)
     while (rb->head != rb->tail && (rb->current_bytes + len > rb->max_bytes)) {
         SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
         if (old_entry->data != NULL) {
+            DEBUG_VALIDATE_BUG_ON(rb->current_bytes < old_entry->len);
             rb->current_bytes -= old_entry->len;
             SCFree(old_entry->data);
             old_entry->data = NULL;
@@ -194,6 +196,7 @@ static int RingBufferPop(SCEveKafkaRingBuffer *rb, SCEveKafkaRingBufferEntry *en
     if (rb->head != rb->tail) {
         entry->data = rb->entries[rb->tail].data;
         entry->len = rb->entries[rb->tail].len;
+        DEBUG_VALIDATE_BUG_ON(rb->current_bytes < entry->len);
         rb->current_bytes -= entry->len;
 
         rb->entries[rb->tail].data = NULL;
@@ -332,7 +335,7 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
         setup->partition = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "ring-buffer-size", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("ring-buffer-size", intval) != 0) {
+        if (KafkaValidateInt("ring-buffer-size", intval, 2) != 0) {
             goto error;
         }
         setup->ring_buffer_size = (int)intval;
@@ -1297,6 +1300,19 @@ static int KafkaTestParseConfigInvalidRingBufferMaxBytes(void)
     PASS;
 }
 
+static int KafkaTestParseConfigInvalidRingBufferSize(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.ring-buffer-size", "1"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
 static int KafkaTestParseConfigInvalidPartition(void)
 {
     SCConfNode *node = KafkaTestCreateBaseConfig();
@@ -1390,6 +1406,8 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestParseConfigDefaults", KafkaTestParseConfigDefaults);
     UtRegisterTest("KafkaTestParseConfigInvalidRingBufferMaxBytes",
             KafkaTestParseConfigInvalidRingBufferMaxBytes);
+    UtRegisterTest("KafkaTestParseConfigInvalidRingBufferSize",
+            KafkaTestParseConfigInvalidRingBufferSize);
     UtRegisterTest("KafkaTestParseConfigInvalidPartition", KafkaTestParseConfigInvalidPartition);
     UtRegisterTest("KafkaTestParseConfigInvalidReconnectBackoffOrder",
             KafkaTestParseConfigInvalidReconnectBackoffOrder);
