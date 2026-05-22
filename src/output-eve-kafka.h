@@ -159,7 +159,6 @@ typedef struct SCEveKafkaThreadData_ {
 typedef struct SCEveKafkaContext_ {
     rd_kafka_t *rk;                  /* Kafka producer handle */
     KafkaSetup setup;                /* Configuration (owned by this struct) */
-    SCEveKafkaQueue *queue;          /* Per-thread queue for event queuing */
     pthread_t producer_thread;       /* Background producer thread */
     SC_ATOMIC_DECLARE(int, stop_flag); /* Thread stop signal (set to 1 to stop) */
     SCEveKafkaQueueRegistry *registry; /* Registry of per-thread queues */

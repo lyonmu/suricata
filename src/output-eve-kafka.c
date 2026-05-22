@@ -71,8 +71,6 @@ typedef void (*KafkaPollHookFunc)(void *ctx, const int timeout_ms);
 static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
         char *data, const size_t len, KafkaProduceHookFunc produce_hook,
         KafkaPollHookFunc poll_hook, uint32_t *retries_out);
-static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
-        const bool is_final_drain);
 typedef rd_kafka_resp_err_t (*KafkaDrainProduceHookFunc)(
         void *ctx, const char *topic, int32_t partition,
         const uint8_t *data, size_t len, const void *key, size_t key_len);
@@ -121,19 +119,6 @@ static inline bool KafkaShouldRetryQueueFull(
         const rd_kafka_resp_err_t ret, const uint32_t retry_count)
 {
     return ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retry_count);
-}
-
-static rd_kafka_resp_err_t KafkaProduceHook(void *ctx, const char *topic, char *data, const size_t len)
-{
-    SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
-    return rd_kafka_producev(kctx->rk, RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_VALUE(data, len),
-            RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_FREE), RD_KAFKA_V_KEY(NULL, 0), RD_KAFKA_V_END);
-}
-
-static void KafkaPollHook(void *ctx, const int timeout_ms)
-{
-    SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
-    rd_kafka_poll(kctx->rk, timeout_ms);
 }
 
 static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
@@ -247,36 +232,6 @@ static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const c
         }
         return ret;
     }
-}
-
-static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
-        const bool is_final_drain)
-{
-    uint32_t retries = 0;
-    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(
-            ctx, ctx->setup.topic, data, len, KafkaProduceHook, KafkaPollHook, &retries);
-    if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
-        return 0;
-    }
-
-    if (ret == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
-        if (is_final_drain) {
-            SCLogWarning("Kafka internal queue full after %u/%u retries in final drain, "
-                         "dropping message",
-                    retries, KAFKA_QUEUE_FULL_RETRY_MAX);
-        } else {
-            SCLogWarning("Kafka internal queue full after %u/%u retries, dropping message",
-                    retries, KAFKA_QUEUE_FULL_RETRY_MAX);
-        }
-    } else if (is_final_drain) {
-        SCLogError("Failed to produce final message: %s", rd_kafka_err2str(ret));
-    } else {
-        SCLogError("Failed to produce message: %s", rd_kafka_err2str(ret));
-    }
-
-    SCFree(data);
-    SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-    return -1;
 }
 
 static void KafkaQueueDropOldestLocked(SCEveKafkaQueue *queue)
@@ -1304,9 +1259,6 @@ static void KafkaDeinit(void *init_data)
     /* Wait for producer thread to finish */
     pthread_join(ctx->producer_thread, NULL);
 
-    /* Flush librdkafka queue */
-    rd_kafka_flush(ctx->rk, 10000);
-
     /* Destroy producer */
     rd_kafka_destroy(ctx->rk);
 
@@ -1887,7 +1839,7 @@ static int KafkaTestDrainRoundRobinFairness(void)
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10,
-            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx, false);
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 2);
     FAIL_IF(dctx.produced_count != 2);
@@ -1921,7 +1873,7 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17,
-            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx, false);
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 0);
     FAIL_IF(dctx.produced_count != 0);
