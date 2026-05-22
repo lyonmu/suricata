@@ -307,6 +307,69 @@ static void KafkaQueueDestroy(SCEveKafkaQueue *queue)
     SCFree(queue);
 }
 
+static SCEveKafkaQueueRegistry *KafkaQueueRegistryCreate(void)
+{
+    SCEveKafkaQueueRegistry *registry = SCCalloc(1, sizeof(*registry));
+    if (registry == NULL) {
+        return NULL;
+    }
+    registry->queue_capacity = 4;
+    registry->queues = SCCalloc(registry->queue_capacity, sizeof(*registry->queues));
+    if (registry->queues == NULL) {
+        SCFree(registry);
+        return NULL;
+    }
+    SCMutexInit(&registry->lock, NULL);
+    return registry;
+}
+
+static int KafkaQueueRegistryRegister(SCEveKafkaQueueRegistry *registry, SCEveKafkaQueue *queue)
+{
+    DEBUG_VALIDATE_BUG_ON(registry == NULL);
+    DEBUG_VALIDATE_BUG_ON(queue == NULL);
+
+    SCMutexLock(&registry->lock);
+    if (registry->queue_count == registry->queue_capacity) {
+        uint32_t new_capacity = registry->queue_capacity * 2;
+        SCEveKafkaQueue **new_queues =
+                SCRealloc(registry->queues, new_capacity * sizeof(*registry->queues));
+        if (new_queues == NULL) {
+            SCMutexUnlock(&registry->lock);
+            return -1;
+        }
+        registry->queues = new_queues;
+        registry->queue_capacity = new_capacity;
+    }
+    registry->queues[registry->queue_count++] = queue;
+    SCMutexUnlock(&registry->lock);
+    return 0;
+}
+
+static void KafkaQueueRegistryCloseAll(SCEveKafkaQueueRegistry *registry)
+{
+    if (registry == NULL) {
+        return;
+    }
+    SCMutexLock(&registry->lock);
+    for (uint32_t i = 0; i < registry->queue_count; i++) {
+        KafkaQueueClose(registry->queues[i]);
+    }
+    SCMutexUnlock(&registry->lock);
+}
+
+static void KafkaQueueRegistryDestroy(SCEveKafkaQueueRegistry *registry)
+{
+    if (registry == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < registry->queue_count; i++) {
+        KafkaQueueDestroy(registry->queues[i]);
+    }
+    SCFree(registry->queues);
+    SCMutexDestroy(&registry->lock);
+    SCFree(registry);
+}
+
 /**
  * \brief Parse Kafka configuration
  */
@@ -1056,7 +1119,11 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
         goto error;
     }
 
-    /* Queue will be initialized in Task 3 */
+    /* Create queue registry for per-thread queues */
+    ctx->registry = KafkaQueueRegistryCreate();
+    if (ctx->registry == NULL) {
+        FatalError("Kafka: Failed to create queue registry");
+    }
 
     /* Create librdkafka configuration */
     rd_kafka_conf_t *rk_conf = KafkaCreateRdKafkaConf(&ctx->setup);
@@ -1087,7 +1154,11 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
     SC_ATOMIC_INIT(ctx->messages_sent);
     SC_ATOMIC_INIT(ctx->messages_failed);
     SC_ATOMIC_INIT(ctx->messages_dropped);
+    SC_ATOMIC_INIT(ctx->messages_dropped_queue);
+    SC_ATOMIC_INIT(ctx->messages_dropped_produce);
     SC_ATOMIC_INIT(ctx->bytes_sent);
+    SC_ATOMIC_INIT(ctx->messages_queued);
+    SC_ATOMIC_INIT(ctx->bytes_queued);
     SC_ATOMIC_INIT(ctx->delivery_callback_count);
     SC_ATOMIC_INIT(ctx->stop_flag);
     SC_ATOMIC_SET(ctx->stop_flag, 0);
@@ -1142,6 +1213,9 @@ static void KafkaDeinit(void *init_data)
     /* Destroy producer */
     rd_kafka_destroy(ctx->rk);
 
+    /* Destroy queue registry (also destroys per-thread queues) */
+    KafkaQueueRegistryDestroy(ctx->registry);
+
     /* Free configuration */
     KafkaFreeConfig(&ctx->setup);
 
@@ -1156,21 +1230,32 @@ static void KafkaDeinit(void *init_data)
 
 /**
  * \brief Write JSON event to queue
- *
- * \note Queue is wired into the write path in Task 3.
  */
 static int KafkaWrite(const char *buffer, const int buffer_len,
                       const void *init_data, void *thread_data)
 {
     SCEveKafkaContext *ctx = (SCEveKafkaContext *)init_data;
-    if (ctx == NULL || ctx->queue == NULL) {
+    SCEveKafkaThreadData *td = (SCEveKafkaThreadData *)thread_data;
+    if (ctx == NULL || td == NULL || td->queue == NULL || buffer == NULL || buffer_len <= 0) {
         return 0;
     }
 
-    /* Queue wiring into write path is done in Task 3. */
-    (void)buffer;
-    (void)buffer_len;
+    char *data = SCMalloc((size_t)buffer_len + 1);
+    if (data == NULL) {
+        SC_ATOMIC_ADD(ctx->messages_dropped_queue, 1);
+        return 0;
+    }
+    memcpy(data, buffer, (size_t)buffer_len);
+    data[buffer_len] = '\0';
 
+    KafkaQueuePushResult ret = KafkaQueuePush(td->queue, (const uint8_t *)data, (size_t)buffer_len);
+    if (ret == KAFKA_QUEUE_PUSH_OK) {
+        SC_ATOMIC_ADD(ctx->messages_queued, 1);
+        SC_ATOMIC_ADD(ctx->bytes_queued, (uint64_t)buffer_len);
+    } else {
+        SC_ATOMIC_ADD(ctx->messages_dropped_queue, 1);
+    }
+    SCFree(data);
     return 0;
 }
 
@@ -1179,7 +1264,25 @@ static int KafkaWrite(const char *buffer, const int buffer_len,
  */
 static int KafkaThreadInit(const void *init_data, const ThreadId thread_id, void **thread_data)
 {
-    *thread_data = NULL;
+    SCEveKafkaContext *ctx = (SCEveKafkaContext *)init_data;
+    SCEveKafkaThreadData *td = SCCalloc(1, sizeof(*td));
+    if (td == NULL) {
+        return -1;
+    }
+
+    td->queue = KafkaQueueCreate(
+            (uint32_t)ctx->setup.ring_buffer_size, ctx->setup.ring_buffer_max_bytes);
+    if (td->queue == NULL) {
+        SCFree(td);
+        return -1;
+    }
+    if (KafkaQueueRegistryRegister(ctx->registry, td->queue) != 0) {
+        KafkaQueueDestroy(td->queue);
+        SCFree(td);
+        return -1;
+    }
+
+    *thread_data = td;
     return 0;
 }
 
@@ -1188,6 +1291,12 @@ static int KafkaThreadInit(const void *init_data, const ThreadId thread_id, void
  */
 static void KafkaThreadDeinit(const void *init_data, void *thread_data)
 {
+    SCEveKafkaThreadData *td = (SCEveKafkaThreadData *)thread_data;
+    if (td == NULL) {
+        return;
+    }
+    KafkaQueueClose(td->queue);
+    SCFree(td);
 }
 
 #ifdef UNITTESTS
@@ -1582,6 +1691,48 @@ static int KafkaTestQueueClosedRejectsWrites(void)
     PASS;
 }
 
+static int KafkaTestQueueRegistryRegistersMultipleQueues(void)
+{
+    SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
+    FAIL_IF_NULL(registry);
+
+    SCEveKafkaQueue *q0 = KafkaQueueCreate(4, 64);
+    SCEveKafkaQueue *q1 = KafkaQueueCreate(4, 64);
+    FAIL_IF_NULL(q0);
+    FAIL_IF_NULL(q1);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q0) != 0);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q1) != 0);
+    FAIL_IF(registry->queue_count != 2);
+
+    KafkaQueueRegistryDestroy(registry);
+    PASS;
+}
+
+static int KafkaTestKafkaWriteUsesThreadQueue(void)
+{
+    SCEveKafkaContext ctx = { 0 };
+    SC_ATOMIC_INIT(ctx.messages_queued);
+    SC_ATOMIC_INIT(ctx.messages_dropped_queue);
+    SC_ATOMIC_INIT(ctx.bytes_queued);
+
+    SCEveKafkaQueue *q = KafkaQueueCreate(4, 64);
+    FAIL_IF_NULL(q);
+    SCEveKafkaThreadData td = { .queue = q };
+
+    FAIL_IF(KafkaWrite("{\"event_type\":\"alert\"}", 22, &ctx, &td) != 0);
+    FAIL_IF(SC_ATOMIC_GET(ctx.messages_queued) != 1);
+    FAIL_IF(SC_ATOMIC_GET(ctx.bytes_queued) != 22);
+
+    SCEveKafkaQueueEntry *entry = KafkaQueuePop(q);
+    FAIL_IF_NULL(entry);
+    FAIL_IF(entry->len != 22);
+    SCFree(entry->data);
+    SCFree(entry);
+
+    KafkaQueueDestroy(q);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1644,6 +1795,9 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestQueueByteBudgetDropOldest", KafkaTestQueueByteBudgetDropOldest);
     UtRegisterTest("KafkaTestQueueOversizedDrop", KafkaTestQueueOversizedDrop);
     UtRegisterTest("KafkaTestQueueClosedRejectsWrites", KafkaTestQueueClosedRejectsWrites);
+    UtRegisterTest("KafkaTestQueueRegistryRegistersMultipleQueues",
+            KafkaTestQueueRegistryRegistersMultipleQueues);
+    UtRegisterTest("KafkaTestKafkaWriteUsesThreadQueue", KafkaTestKafkaWriteUsesThreadQueue);
 #endif
 }
 

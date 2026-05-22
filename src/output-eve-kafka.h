@@ -141,6 +141,18 @@ typedef struct SCEveKafkaQueue_ {
     uint64_t popped;
 } SCEveKafkaQueue;
 
+typedef struct SCEveKafkaQueueRegistry_ {
+    SCEveKafkaQueue **queues;
+    uint32_t queue_count;
+    uint32_t queue_capacity;
+    uint32_t next_queue;
+    SCMutex lock;
+} SCEveKafkaQueueRegistry;
+
+typedef struct SCEveKafkaThreadData_ {
+    SCEveKafkaQueue *queue;
+} SCEveKafkaThreadData;
+
 #ifdef HAVE_LIBRDKAFKA
 #include <librdkafka/rdkafka.h>
 
@@ -150,12 +162,17 @@ typedef struct SCEveKafkaContext_ {
     SCEveKafkaQueue *queue;          /* Per-thread queue for event queuing */
     pthread_t producer_thread;       /* Background producer thread */
     SC_ATOMIC_DECLARE(int, stop_flag); /* Thread stop signal (set to 1 to stop) */
+    SCEveKafkaQueueRegistry *registry; /* Registry of per-thread queues */
 
     /* Statistics - atomic for thread-safe updates */
     SC_ATOMIC_DECLARE(uint64_t, messages_sent);
     SC_ATOMIC_DECLARE(uint64_t, messages_failed);
     SC_ATOMIC_DECLARE(uint64_t, messages_dropped);
+    SC_ATOMIC_DECLARE(uint64_t, messages_dropped_queue);
+    SC_ATOMIC_DECLARE(uint64_t, messages_dropped_produce);
     SC_ATOMIC_DECLARE(uint64_t, bytes_sent);
+    SC_ATOMIC_DECLARE(uint64_t, messages_queued);
+    SC_ATOMIC_DECLARE(uint64_t, bytes_queued);
     SC_ATOMIC_DECLARE(uint64_t, delivery_callback_count);
 } SCEveKafkaContext;
 
