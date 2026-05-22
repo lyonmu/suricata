@@ -65,6 +65,4 @@ doc/userguide/*.1
 
 # Don't ignore *.rules in rules/
 !/rules/*.rules
-AGENTS.md
-CLAUDE.md
-plans/
+.antigravitycli/
