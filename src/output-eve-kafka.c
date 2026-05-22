@@ -36,13 +36,13 @@
 #define _GNU_SOURCE
 #endif
 
-#include <limits.h>
-
 #include "suricata-common.h"
 #include "output-eve.h"
 #include "output-eve-kafka.h"
 #include "conf.h"
 #include "util-debug.h"
+
+#include <limits.h>
 #include "util-unittest.h"
 
 #ifdef HAVE_LIBRDKAFKA
@@ -65,12 +65,6 @@ static void KafkaFreeConfig(KafkaSetup *setup);
 static bool KafkaQueueFullRetryBudget(const uint32_t retry_count);
 static inline bool KafkaShouldRetryQueueFull(
         const rd_kafka_resp_err_t ret, const uint32_t retry_count);
-typedef rd_kafka_resp_err_t (*KafkaProduceHookFunc)(void *ctx, const char *topic,
-        char *data, const size_t len);
-typedef void (*KafkaPollHookFunc)(void *ctx, const int timeout_ms);
-static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
-        char *data, const size_t len, KafkaProduceHookFunc produce_hook,
-        KafkaPollHookFunc poll_hook, uint32_t *retries_out);
 typedef int (*KafkaCreateTopicHookFunc)(void *ctx, const char *topic, int32_t partition_count);
 static int KafkaMaybeCreateTopic(const KafkaSetup *setup, const char *topic,
         KafkaCreateTopicHookFunc hook, void *hook_ctx);
@@ -211,33 +205,6 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
     return total_drained;
 }
 
-static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
-        char *data, const size_t len, KafkaProduceHookFunc produce_hook,
-        KafkaPollHookFunc poll_hook, uint32_t *retries_out)
-{
-    uint32_t retries = 0;
-
-    while (1) {
-        rd_kafka_resp_err_t ret = produce_hook(hook_ctx, topic, data, len);
-        if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
-            if (retries_out != NULL) {
-                *retries_out = retries;
-            }
-            return ret;
-        }
-
-        if (KafkaShouldRetryQueueFull(ret, retries)) {
-            retries++;
-            poll_hook(hook_ctx, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
-            continue;
-        }
-
-        if (retries_out != NULL) {
-            *retries_out = retries;
-        }
-        return ret;
-    }
-}
 
 static void KafkaQueueDropOldestLocked(SCEveKafkaQueue *queue)
 {
@@ -1368,6 +1335,37 @@ static void KafkaThreadDeinit(const void *init_data, void *thread_data)
 }
 
 #ifdef UNITTESTS
+
+typedef rd_kafka_resp_err_t (*KafkaProduceHookFunc)(void *ctx, const char *topic,
+        char *data, const size_t len);
+typedef void (*KafkaPollHookFunc)(void *ctx, const int timeout_ms);
+static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
+        char *data, const size_t len, KafkaProduceHookFunc produce_hook,
+        KafkaPollHookFunc poll_hook, uint32_t *retries_out)
+{
+    uint32_t retries = 0;
+
+    while (1) {
+        rd_kafka_resp_err_t ret = produce_hook(hook_ctx, topic, data, len);
+        if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
+            if (retries_out != NULL) {
+                *retries_out = retries;
+            }
+            return ret;
+        }
+
+        if (KafkaShouldRetryQueueFull(ret, retries)) {
+            retries++;
+            poll_hook(hook_ctx, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
+            continue;
+        }
+
+        if (retries_out != NULL) {
+            *retries_out = retries;
+        }
+        return ret;
+    }
+}
 
 static SCConfNode *KafkaTestCreateBaseConfig(void)
 {
