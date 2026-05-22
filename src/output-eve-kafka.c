@@ -261,17 +261,24 @@ static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue)
     if (queue->count == 0) {
         goto unlock;
     }
-    entry = SCCalloc(1, sizeof(*entry));
-    if (entry == NULL) {
-        goto unlock;
-    }
-    *entry = queue->entries[queue->head];
+    /* Advance head and remove slot from queue BEFORE allocating wrapper.
+     * If SCCalloc fails below, the entry data is lost but the queue
+     * doesn't get stuck retrying the same entry forever. */
+    uint8_t *data = queue->entries[queue->head].data;
+    size_t len = queue->entries[queue->head].len;
     queue->entries[queue->head].data = NULL;
     queue->entries[queue->head].len = 0;
     queue->head = (queue->head + 1) % queue->capacity;
     queue->count--;
-    queue->current_bytes -= entry->len;
+    queue->current_bytes -= len;
     queue->popped++;
+    entry = SCCalloc(1, sizeof(*entry));
+    if (entry == NULL) {
+        SCFree(data);
+        goto unlock;
+    }
+    entry->data = data;
+    entry->len = len;
 unlock:
     SCSpinUnlock(&queue->lock);
     return entry;
@@ -279,6 +286,9 @@ unlock:
 
 static void KafkaQueueClose(SCEveKafkaQueue *queue)
 {
+    if (queue == NULL) {
+        return;
+    }
     SCSpinLock(&queue->lock);
     queue->closing = true;
     SCSpinUnlock(&queue->lock);
