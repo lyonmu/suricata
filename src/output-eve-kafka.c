@@ -23,14 +23,18 @@
  * File-like output for logging: Apache Kafka
  *
  * This module implements EVE output to Apache Kafka using librdkafka.
- * It uses a ring buffer for decoupling Suricata's packet processing
+ * It uses a per-thread queue for decoupling Suricata's packet processing
  * from Kafka message production, ensuring that Kafka failures do not
  * affect packet processing performance.
  *
- * \note Ring buffer overwrites oldest messages when full.
+ * \note Queue overwrites oldest messages when full.
  * This may cause out-of-order delivery during high load.
  * For strict ordering, increase ring_buffer_size.
  */
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 
 #include <limits.h>
 
@@ -179,157 +183,118 @@ static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_
     return -1;
 }
 
-/**
- * \brief Initialize ring buffer with specified size
- */
-static SCEveKafkaRingBuffer *RingBufferInit(uint32_t size, uint64_t max_bytes)
+static void KafkaQueueDropOldestLocked(SCEveKafkaQueue *queue)
 {
-    if (size < 2 || max_bytes == 0) {
-        SCLogError("Ring buffer size must be >= 2 and max bytes must be > 0");
-        return NULL;
-    }
-
-    SCEveKafkaRingBuffer *rb = SCCalloc(1, sizeof(*rb));
-    if (rb == NULL) {
-        return NULL;
-    }
-
-    rb->entries = SCCalloc(size, sizeof(SCEveKafkaRingBufferEntry));
-    if (rb->entries == NULL) {
-        SCFree(rb);
-        return NULL;
-    }
-
-    rb->size = size;
-    rb->head = 0;
-    rb->tail = 0;
-    rb->current_bytes = 0;
-    rb->max_bytes = max_bytes;
-    SC_ATOMIC_INIT(rb->dropped);
-    SC_ATOMIC_INIT(rb->pushed);
-    SC_ATOMIC_INIT(rb->popped);
-    SCSpinInit(&rb->lock, 0);
-
-    SCLogInfo("Kafka ring buffer initialized with size %u and max bytes %" PRIu64,
-            size, max_bytes);
-    return rb;
+    SCEveKafkaQueueEntry *entry = &queue->entries[queue->head];
+    queue->current_bytes -= entry->len;
+    SCFree(entry->data);
+    entry->data = NULL;
+    entry->len = 0;
+    queue->head = (queue->head + 1) % queue->capacity;
+    queue->count--;
+    queue->dropped++;
 }
 
-/**
- * \brief Push message to ring buffer
- */
-static int RingBufferPush(SCEveKafkaRingBuffer *rb, char *data, size_t len)
+static SCEveKafkaQueue *KafkaQueueCreate(const uint32_t capacity, const uint64_t max_bytes)
 {
-    DEBUG_VALIDATE_BUG_ON(rb == NULL);
-    DEBUG_VALIDATE_BUG_ON(data == NULL);
-
-    SCSpinLock(&rb->lock);
-
-    if ((uint64_t)len > rb->max_bytes) {
-        SC_ATOMIC_ADD(rb->dropped, 1);
-        SCSpinUnlock(&rb->lock);
-        SCFree(data);
-        return 0;
+    if (capacity < 2 || max_bytes == 0) {
+        return NULL;
     }
-
-    uint32_t next_head = (rb->head + 1) % rb->size;
-
-    /* Enforce message count budget first */
-    while (next_head == rb->tail) {
-        SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
-        if (old_entry->data != NULL) {
-            DEBUG_VALIDATE_BUG_ON(rb->current_bytes < old_entry->len);
-            rb->current_bytes -= old_entry->len;
-            SCFree(old_entry->data);
-            old_entry->data = NULL;
-            old_entry->len = 0;
-            SC_ATOMIC_ADD(rb->dropped, 1);
-        }
-        rb->tail = (rb->tail + 1) % rb->size;
-        next_head = (rb->head + 1) % rb->size;
+    SCEveKafkaQueue *queue = SCCalloc(1, sizeof(*queue));
+    if (queue == NULL) {
+        return NULL;
     }
-
-    /* Enforce byte budget by dropping oldest entries until message fits */
-    while (rb->head != rb->tail && (rb->current_bytes + len > rb->max_bytes)) {
-        SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
-        if (old_entry->data != NULL) {
-            DEBUG_VALIDATE_BUG_ON(rb->current_bytes < old_entry->len);
-            rb->current_bytes -= old_entry->len;
-            SCFree(old_entry->data);
-            old_entry->data = NULL;
-            old_entry->len = 0;
-            SC_ATOMIC_ADD(rb->dropped, 1);
-        }
-        rb->tail = (rb->tail + 1) % rb->size;
+    queue->entries = SCCalloc(capacity, sizeof(*queue->entries));
+    if (queue->entries == NULL) {
+        SCFree(queue);
+        return NULL;
     }
-
-    /* Add new entry at head */
-    SCEveKafkaRingBufferEntry *entry = &rb->entries[rb->head];
-    entry->data = data;
-    entry->len = len;
-    rb->current_bytes += len;
-    rb->head = next_head;
-
-    SC_ATOMIC_ADD(rb->pushed, 1);
-
-    SCSpinUnlock(&rb->lock);
-    return 0;
+    queue->capacity = capacity;
+    queue->max_bytes = max_bytes;
+    SCSpinInit(&queue->lock, 0);
+    return queue;
 }
 
-/**
- * \brief Pop single message from ring buffer
- */
-static int RingBufferPop(SCEveKafkaRingBuffer *rb, SCEveKafkaRingBufferEntry *entry)
+static KafkaQueuePushResult KafkaQueuePush(
+        SCEveKafkaQueue *queue, const uint8_t *data, const size_t len)
 {
-    DEBUG_VALIDATE_BUG_ON(rb == NULL);
-    DEBUG_VALIDATE_BUG_ON(entry == NULL);
-
-    int ret = -1;
-
-    SCSpinLock(&rb->lock);
-
-    if (rb->head != rb->tail) {
-        entry->data = rb->entries[rb->tail].data;
-        entry->len = rb->entries[rb->tail].len;
-        DEBUG_VALIDATE_BUG_ON(rb->current_bytes < entry->len);
-        rb->current_bytes -= entry->len;
-
-        rb->entries[rb->tail].data = NULL;
-        rb->entries[rb->tail].len = 0;
-
-        rb->tail = (rb->tail + 1) % rb->size;
-
-        SC_ATOMIC_ADD(rb->popped, 1);
-        ret = 0;
+    KafkaQueuePushResult result;
+    SCSpinLock(&queue->lock);
+    if (queue->closing) {
+        result = KAFKA_QUEUE_PUSH_CLOSED;
+        goto unlock;
     }
-
-    SCSpinUnlock(&rb->lock);
-    return ret;
+    if (len > queue->max_bytes) {
+        queue->dropped++;
+        result = KAFKA_QUEUE_PUSH_DROPPED;
+        goto unlock;
+    }
+    while (queue->count >= queue->capacity) {
+        KafkaQueueDropOldestLocked(queue);
+    }
+    while (queue->current_bytes + len > queue->max_bytes && queue->count > 0) {
+        KafkaQueueDropOldestLocked(queue);
+    }
+    uint8_t *copy = SCMalloc(len);
+    if (copy == NULL) {
+        queue->dropped++;
+        result = KAFKA_QUEUE_PUSH_DROPPED;
+        goto unlock;
+    }
+    memcpy(copy, data, len);
+    queue->entries[queue->tail].data = copy;
+    queue->entries[queue->tail].len = len;
+    queue->tail = (queue->tail + 1) % queue->capacity;
+    queue->count++;
+    queue->current_bytes += len;
+    queue->pushed++;
+    result = KAFKA_QUEUE_PUSH_OK;
+unlock:
+    SCSpinUnlock(&queue->lock);
+    return result;
 }
 
-/**
- * \brief Destroy ring buffer
- */
-static void RingBufferDestroy(SCEveKafkaRingBuffer *rb)
+static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue)
 {
-    if (rb == NULL) return;
-
-    SCLogInfo("Kafka ring buffer destroying (dropped: %"PRIu64", pushed: %"PRIu64", popped: %"PRIu64")",
-              SC_ATOMIC_GET(rb->dropped),
-              SC_ATOMIC_GET(rb->pushed),
-              SC_ATOMIC_GET(rb->popped));
-
-    for (uint32_t i = 0; i < rb->size; i++) {
-        if (rb->entries[i].data != NULL) {
-            SCFree(rb->entries[i].data);
-            rb->entries[i].data = NULL;
-            rb->entries[i].len = 0;
-        }
+    SCEveKafkaQueueEntry *entry = NULL;
+    SCSpinLock(&queue->lock);
+    if (queue->count == 0) {
+        goto unlock;
     }
+    entry = SCCalloc(1, sizeof(*entry));
+    if (entry == NULL) {
+        goto unlock;
+    }
+    *entry = queue->entries[queue->head];
+    queue->entries[queue->head].data = NULL;
+    queue->entries[queue->head].len = 0;
+    queue->head = (queue->head + 1) % queue->capacity;
+    queue->count--;
+    queue->current_bytes -= entry->len;
+    queue->popped++;
+unlock:
+    SCSpinUnlock(&queue->lock);
+    return entry;
+}
 
-    SCFree(rb->entries);
-    SCSpinDestroy(&rb->lock);
-    SCFree(rb);
+static void KafkaQueueClose(SCEveKafkaQueue *queue)
+{
+    SCSpinLock(&queue->lock);
+    queue->closing = true;
+    SCSpinUnlock(&queue->lock);
+}
+
+static void KafkaQueueDestroy(SCEveKafkaQueue *queue)
+{
+    if (queue == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < queue->capacity; i++) {
+        SCFree(queue->entries[i].data);
+    }
+    SCFree(queue->entries);
+    SCSpinDestroy(&queue->lock);
+    SCFree(queue);
 }
 
 /**
@@ -994,9 +959,9 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
  * Thread lifecycle:
  * 1. Named "SCKafkaProd" via SCSetThreadName() for debugging
  * 2. Loops until stop_flag is set or Suricata shutdown signal
- * 3. Pops messages from ring buffer and produces to Kafka immediately
+ * 3. Pops messages from queue and produces to Kafka immediately
  * 4. Calls rd_kafka_poll() regularly to trigger delivery callbacks
- * 5. On exit: drains ring buffer, flushes librdkafka queue
+ * 5. On exit: closes queue, drains remaining messages, flushes librdkafka queue
  *
  * Note: Batching is handled by librdkafka internally via linger.ms setting.
  *       No application-level batching is needed.
@@ -1010,11 +975,12 @@ static void *KafkaProducerThread(void *arg)
     SCLogInfo("Kafka producer thread started");
 
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
-        SCEveKafkaRingBufferEntry entry;
+        SCEveKafkaQueueEntry *entry = KafkaQueuePop(ctx->queue);
 
-        /* Try to get message from ring buffer */
-        if (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-            KafkaProduceWithRetry(ctx, entry.data, entry.len, false);
+        if (entry != NULL) {
+            KafkaProduceWithRetry(ctx, (char *)entry->data, entry->len, false);
+            SCFree(entry->data);
+            SCFree(entry);
         } else {
             /* No message available - sleep briefly to avoid busy-wait */
             usleep(1000);
@@ -1026,10 +992,14 @@ static void *KafkaProducerThread(void *arg)
 
     SCLogInfo("Kafka producer thread: draining remaining messages...");
 
-    /* Drain ring buffer - get all remaining messages */
-    SCEveKafkaRingBufferEntry entry;
-    while (RingBufferPop(ctx->ring_buffer, &entry) == 0) {
-        KafkaProduceWithRetry(ctx, entry.data, entry.len, true);
+    /* Close queue to reject new writes, then drain remaining messages */
+    KafkaQueueClose(ctx->queue);
+
+    SCEveKafkaQueueEntry *entry;
+    while ((entry = KafkaQueuePop(ctx->queue)) != NULL) {
+        KafkaProduceWithRetry(ctx, (char *)entry->data, entry->len, true);
+        SCFree(entry->data);
+        SCFree(entry);
     }
 
     /* Wait for librdkafka internal queue to drain */
@@ -1076,13 +1046,7 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
         goto error;
     }
 
-    /* Initialize ring buffer */
-    ctx->ring_buffer = RingBufferInit(
-            ctx->setup.ring_buffer_size, ctx->setup.ring_buffer_max_bytes);
-    if (!ctx->ring_buffer) {
-        SCLogError("Kafka: Failed to initialize ring buffer");
-        goto error;
-    }
+    /* Queue will be initialized in Task 3 */
 
     /* Create librdkafka configuration */
     rd_kafka_conf_t *rk_conf = KafkaCreateRdKafkaConf(&ctx->setup);
@@ -1137,7 +1101,6 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
 
 error:
     if (ctx->rk) rd_kafka_destroy(ctx->rk);
-    if (ctx->ring_buffer) RingBufferDestroy(ctx->ring_buffer);
     KafkaFreeConfig(&ctx->setup);
     SCFree(ctx);
     return -1;
@@ -1159,8 +1122,8 @@ static void KafkaDeinit(void *init_data)
     /* Wait for producer thread to finish */
     pthread_join(ctx->producer_thread, NULL);
 
-    /* Destroy ring buffer */
-    RingBufferDestroy(ctx->ring_buffer);
+    /* Destroy queue */
+    KafkaQueueDestroy(ctx->queue);
 
     /* Flush librdkafka queue */
     rd_kafka_flush(ctx->rk, 10000);
@@ -1181,31 +1144,21 @@ static void KafkaDeinit(void *init_data)
 }
 
 /**
- * \brief Write JSON event to ring buffer
+ * \brief Write JSON event to queue
+ *
+ * \note Queue is wired into the write path in Task 3.
  */
 static int KafkaWrite(const char *buffer, const int buffer_len,
                       const void *init_data, void *thread_data)
 {
     SCEveKafkaContext *ctx = (SCEveKafkaContext *)init_data;
-    if (ctx == NULL || ctx->ring_buffer == NULL) {
+    if (ctx == NULL || ctx->queue == NULL) {
         return 0;
     }
 
-    /* Allocate copy of data */
-    char *data = SCMalloc(buffer_len + 1);
-    if (data == NULL) {
-        SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-        return 0;
-    }
-    memcpy(data, buffer, buffer_len);
-    data[buffer_len] = '\0';
-
-    /* Push to ring buffer */
-    int ret = RingBufferPush(ctx->ring_buffer, data, buffer_len);
-    if (ret != 0) {
-        SCFree(data);
-        SC_ATOMIC_ADD(ctx->messages_dropped, 1);
-    }
+    /* Queue wiring into write path is done in Task 3. */
+    (void)buffer;
+    (void)buffer_len;
 
     return 0;
 }
@@ -1246,64 +1199,6 @@ static void KafkaTestDestroyBaseConfig(KafkaSetup *setup)
     SCConfRestoreContextBackup();
 }
 
-static int KafkaTestRingBufferBasic(void)
-{
-    SCEveKafkaRingBuffer *rb = RingBufferInit(16, KAFKA_RING_BUFFER_MAX_BYTES);
-    if (rb == NULL) {
-        return 0;
-    }
-
-    char *data1 = SCMalloc(10);
-    FAIL_IF(data1 == NULL);
-    strcpy(data1, "test1");
-
-    char *data2 = SCMalloc(10);
-    FAIL_IF(data2 == NULL);
-    strcpy(data2, "test2");
-
-    FAIL_IF(RingBufferPush(rb, data1, 6) != 0);
-    FAIL_IF(RingBufferPush(rb, data2, 6) != 0);
-
-    SCEveKafkaRingBufferEntry entry;
-    FAIL_IF(RingBufferPop(rb, &entry) != 0);
-    FAIL_IF(strcmp(entry.data, "test1") != 0);
-    SCFree(entry.data);
-
-    FAIL_IF(RingBufferPop(rb, &entry) != 0);
-    FAIL_IF(strcmp(entry.data, "test2") != 0);
-    SCFree(entry.data);
-
-    FAIL_IF(RingBufferPop(rb, &entry) != -1);
-
-    RingBufferDestroy(rb);
-    PASS;
-}
-
-static int KafkaTestRingBufferOverflow(void)
-{
-    SCEveKafkaRingBuffer *rb = RingBufferInit(4, KAFKA_RING_BUFFER_MAX_BYTES);
-    if (rb == NULL) {
-        return 0;
-    }
-
-    for (int i = 0; i < 3; i++) {
-        char *data = SCMalloc(10);
-        FAIL_IF(data == NULL);
-        snprintf(data, 10, "test%d", i);
-        FAIL_IF(RingBufferPush(rb, data, 6) != 0);
-    }
-
-    char *data = SCMalloc(10);
-    FAIL_IF(data == NULL);
-    strcpy(data, "overflow");
-    FAIL_IF(RingBufferPush(rb, data, 9) != 0);
-
-    FAIL_IF(SC_ATOMIC_GET(rb->dropped) == 0);
-
-    RingBufferDestroy(rb);
-    PASS;
-}
-
 static int KafkaTestParseConfigDefaults(void)
 {
     SCConfNode *node = KafkaTestCreateBaseConfig();
@@ -1318,61 +1213,6 @@ static int KafkaTestParseConfigDefaults(void)
     FAIL_IF(setup.queue_buffering_max_kbytes != KAFKA_QUEUE_BUFFERING_MAX_KBYTES);
 
     KafkaTestDestroyBaseConfig(&setup);
-    PASS;
-}
-
-static int KafkaTestRingBufferByteBudgetDropOldest(void)
-{
-    SCEveKafkaRingBuffer *rb = RingBufferInit(8, 16);
-    FAIL_IF_NULL(rb);
-
-    char *data1 = SCMalloc(8);
-    FAIL_IF_NULL(data1);
-    strcpy(data1, "first");
-    FAIL_IF(RingBufferPush(rb, data1, 8) != 0);
-
-    char *data2 = SCMalloc(8);
-    FAIL_IF_NULL(data2);
-    strcpy(data2, "second");
-    FAIL_IF(RingBufferPush(rb, data2, 8) != 0);
-
-    char *data3 = SCMalloc(8);
-    FAIL_IF_NULL(data3);
-    strcpy(data3, "third");
-    FAIL_IF(RingBufferPush(rb, data3, 8) != 0);
-
-    FAIL_IF(SC_ATOMIC_GET(rb->dropped) != 1);
-
-    SCEveKafkaRingBufferEntry entry;
-    FAIL_IF(RingBufferPop(rb, &entry) != 0);
-    FAIL_IF(strcmp(entry.data, "second") != 0);
-    SCFree(entry.data);
-
-    FAIL_IF(RingBufferPop(rb, &entry) != 0);
-    FAIL_IF(strcmp(entry.data, "third") != 0);
-    SCFree(entry.data);
-
-    FAIL_IF(RingBufferPop(rb, &entry) != -1);
-    RingBufferDestroy(rb);
-    PASS;
-}
-
-static int KafkaTestRingBufferByteBudgetOversizedDrop(void)
-{
-    SCEveKafkaRingBuffer *rb = RingBufferInit(8, 8);
-    FAIL_IF_NULL(rb);
-
-    char *data = SCMalloc(16);
-    FAIL_IF_NULL(data);
-    strcpy(data, "oversized");
-    FAIL_IF(RingBufferPush(rb, data, 16) != 0);
-    FAIL_IF(SC_ATOMIC_GET(rb->dropped) != 1);
-    FAIL_IF(rb->current_bytes != 0);
-
-    SCEveKafkaRingBufferEntry entry;
-    FAIL_IF(RingBufferPop(rb, &entry) != -1);
-
-    RingBufferDestroy(rb);
     PASS;
 }
 
@@ -1624,6 +1464,113 @@ static int KafkaTestParseConfigInvalidTopicPartitions(void)
     PASS;
 }
 
+static int KafkaTestQueueBasicPushPop(void)
+{
+    SCEveKafkaQueue *queue = KafkaQueueCreate(8, 1024);
+    FAIL_IF_NULL(queue);
+
+    uint8_t data[] = "hello";
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(queue->count != 1);
+    FAIL_IF(queue->pushed != 1);
+
+    SCEveKafkaQueueEntry *entry = KafkaQueuePop(queue);
+    FAIL_IF_NULL(entry);
+    FAIL_IF(entry->len != sizeof(data));
+    FAIL_IF(memcmp(entry->data, data, sizeof(data)) != 0);
+    FAIL_IF(queue->popped != 1);
+
+    SCFree(entry->data);
+    SCFree(entry);
+    KafkaQueueDestroy(queue);
+    PASS;
+}
+
+static int KafkaTestQueueCountBudgetDropOldest(void)
+{
+    SCEveKafkaQueue *queue = KafkaQueueCreate(4, 1024 * 1024);
+    FAIL_IF_NULL(queue);
+
+    for (int i = 0; i < 6; i++) {
+        uint8_t data[8];
+        data[0] = (uint8_t)i;
+        FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+    }
+
+    FAIL_IF(queue->count != 4);
+    FAIL_IF(queue->dropped != 2);
+
+    SCEveKafkaQueueEntry *entry = KafkaQueuePop(queue);
+    FAIL_IF_NULL(entry);
+    FAIL_IF(entry->data[0] != 2);
+    SCFree(entry->data);
+    SCFree(entry);
+
+    KafkaQueueDestroy(queue);
+    PASS;
+}
+
+static int KafkaTestQueueByteBudgetDropOldest(void)
+{
+    SCEveKafkaQueue *queue = KafkaQueueCreate(100, 32);
+    FAIL_IF_NULL(queue);
+
+    uint8_t payload[16];
+    memset(payload, 'A', sizeof(payload));
+
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(queue->current_bytes != 32);
+    FAIL_IF(queue->count != 2);
+
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(queue->current_bytes > 32);
+    FAIL_IF(queue->dropped != 1);
+
+    KafkaQueueDestroy(queue);
+    PASS;
+}
+
+static int KafkaTestQueueOversizedDrop(void)
+{
+    SCEveKafkaQueue *queue = KafkaQueueCreate(100, 16);
+    FAIL_IF_NULL(queue);
+
+    uint8_t payload[32];
+    memset(payload, 'B', sizeof(payload));
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_DROPPED);
+    FAIL_IF(queue->count != 0);
+    FAIL_IF(queue->dropped != 1);
+
+    KafkaQueueDestroy(queue);
+    PASS;
+}
+
+static int KafkaTestQueueClosedRejectsWrites(void)
+{
+    SCEveKafkaQueue *queue = KafkaQueueCreate(8, 1024);
+    FAIL_IF_NULL(queue);
+
+    uint8_t data[] = "test";
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(queue->count != 1);
+
+    KafkaQueueClose(queue);
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_CLOSED);
+
+    SCEveKafkaQueueEntry *entry = KafkaQueuePop(queue);
+    FAIL_IF_NULL(entry);
+    FAIL_IF(entry->len != sizeof(data));
+    SCFree(entry->data);
+    SCFree(entry);
+
+    entry = KafkaQueuePop(queue);
+    FAIL_IF_NOT_NULL(entry);
+
+    KafkaQueueDestroy(queue);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1653,12 +1600,6 @@ void SCEveKafkaInitialize(void)
     SCLogNotice("Kafka EVE output registered");
 
 #ifdef UNITTESTS
-    UtRegisterTest("KafkaTestRingBufferBasic", KafkaTestRingBufferBasic);
-    UtRegisterTest("KafkaTestRingBufferOverflow", KafkaTestRingBufferOverflow);
-    UtRegisterTest("KafkaTestRingBufferByteBudgetDropOldest",
-            KafkaTestRingBufferByteBudgetDropOldest);
-    UtRegisterTest("KafkaTestRingBufferByteBudgetOversizedDrop",
-            KafkaTestRingBufferByteBudgetOversizedDrop);
     UtRegisterTest("KafkaTestParseConfigDefaults", KafkaTestParseConfigDefaults);
     UtRegisterTest("KafkaTestParseConfigInvalidRingBufferMaxBytes",
             KafkaTestParseConfigInvalidRingBufferMaxBytes);
@@ -1687,6 +1628,11 @@ void SCEveKafkaInitialize(void)
             KafkaTestParseConfigInvalidIntOverflow);
     UtRegisterTest("KafkaTestParseConfigInvalidTopicPartitions",
             KafkaTestParseConfigInvalidTopicPartitions);
+    UtRegisterTest("KafkaTestQueueBasicPushPop", KafkaTestQueueBasicPushPop);
+    UtRegisterTest("KafkaTestQueueCountBudgetDropOldest", KafkaTestQueueCountBudgetDropOldest);
+    UtRegisterTest("KafkaTestQueueByteBudgetDropOldest", KafkaTestQueueByteBudgetDropOldest);
+    UtRegisterTest("KafkaTestQueueOversizedDrop", KafkaTestQueueOversizedDrop);
+    UtRegisterTest("KafkaTestQueueClosedRejectsWrites", KafkaTestQueueClosedRejectsWrites);
 #endif
 }
 

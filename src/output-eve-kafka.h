@@ -115,23 +115,31 @@ typedef struct KafkaSetup_ {
     char *sasl_password;
 } KafkaSetup;
 
-typedef struct SCEveKafkaRingBufferEntry_ {
-    char *data;                      /* JSON message data (owned by ring buffer after push) */
-    size_t len;                      /* Data length */
-} SCEveKafkaRingBufferEntry;
+typedef enum KafkaQueuePushResult_ {
+    KAFKA_QUEUE_PUSH_OK,
+    KAFKA_QUEUE_PUSH_DROPPED,
+    KAFKA_QUEUE_PUSH_CLOSED,
+} KafkaQueuePushResult;
 
-typedef struct SCEveKafkaRingBuffer_ {
-    SCEveKafkaRingBufferEntry *entries;
-    uint32_t head;                   /* Write position (producer) */
-    uint32_t tail;                   /* Read position (consumer) */
-    uint32_t size;                   /* Buffer size (power of 2 recommended) */
-    uint64_t current_bytes;          /* Total bytes currently buffered */
-    uint64_t max_bytes;              /* Max bytes allowed in buffer */
-    SCSpinlock lock;                 /* Spinlock for thread safety */
-    SC_ATOMIC_DECLARE(uint64_t, dropped);  /* Dropped messages count - atomic */
-    SC_ATOMIC_DECLARE(uint64_t, pushed);   /* Total messages pushed - atomic */
-    SC_ATOMIC_DECLARE(uint64_t, popped);   /* Total messages popped - atomic */
-} SCEveKafkaRingBuffer;
+typedef struct SCEveKafkaQueueEntry_ {
+    uint8_t *data;
+    size_t len;
+} SCEveKafkaQueueEntry;
+
+typedef struct SCEveKafkaQueue_ {
+    SCEveKafkaQueueEntry *entries;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t count;
+    uint32_t capacity;
+    uint64_t current_bytes;
+    uint64_t max_bytes;
+    bool closing;
+    SCSpinlock lock;
+    uint64_t dropped;
+    uint64_t pushed;
+    uint64_t popped;
+} SCEveKafkaQueue;
 
 #ifdef HAVE_LIBRDKAFKA
 #include <librdkafka/rdkafka.h>
@@ -139,7 +147,7 @@ typedef struct SCEveKafkaRingBuffer_ {
 typedef struct SCEveKafkaContext_ {
     rd_kafka_t *rk;                  /* Kafka producer handle */
     KafkaSetup setup;                /* Configuration (owned by this struct) */
-    SCEveKafkaRingBuffer *ring_buffer;  /* Ring buffer for event queuing */
+    SCEveKafkaQueue *queue;          /* Per-thread queue for event queuing */
     pthread_t producer_thread;       /* Background producer thread */
     SC_ATOMIC_DECLARE(int, stop_flag); /* Thread stop signal (set to 1 to stop) */
 
