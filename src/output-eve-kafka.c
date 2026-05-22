@@ -32,6 +32,8 @@
  * For strict ordering, increase ring_buffer_size.
  */
 
+#include <limits.h>
+
 #include "suricata-common.h"
 #include "output-eve.h"
 #include "output-eve-kafka.h"
