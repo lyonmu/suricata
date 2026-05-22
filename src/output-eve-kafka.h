@@ -118,6 +118,8 @@ typedef struct SCEveKafkaRingBuffer_ {
     uint32_t head;                   /* Write position (producer) */
     uint32_t tail;                   /* Read position (consumer) */
     uint32_t size;                   /* Buffer size (power of 2 recommended) */
+    uint64_t current_bytes;          /* Total bytes currently buffered */
+    uint64_t max_bytes;              /* Max bytes allowed in buffer */
     SCSpinlock lock;                 /* Spinlock for thread safety */
     SC_ATOMIC_DECLARE(uint64_t, dropped);  /* Dropped messages count - atomic */
     SC_ATOMIC_DECLARE(uint64_t, pushed);   /* Total messages pushed - atomic */

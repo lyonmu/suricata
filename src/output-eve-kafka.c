@@ -87,10 +87,10 @@ static int KafkaValidateIntGreaterThanZero(const char *name, const intmax_t valu
 /**
  * \brief Initialize ring buffer with specified size
  */
-static SCEveKafkaRingBuffer *RingBufferInit(uint32_t size)
+static SCEveKafkaRingBuffer *RingBufferInit(uint32_t size, uint64_t max_bytes)
 {
-    if (size == 0) {
-        SCLogError("Ring buffer size must be > 0");
+    if (size == 0 || max_bytes == 0) {
+        SCLogError("Ring buffer size and max bytes must be > 0");
         return NULL;
     }
 
@@ -108,12 +108,15 @@ static SCEveKafkaRingBuffer *RingBufferInit(uint32_t size)
     rb->size = size;
     rb->head = 0;
     rb->tail = 0;
+    rb->current_bytes = 0;
+    rb->max_bytes = max_bytes;
     SC_ATOMIC_INIT(rb->dropped);
     SC_ATOMIC_INIT(rb->pushed);
     SC_ATOMIC_INIT(rb->popped);
     SCSpinInit(&rb->lock, 0);
 
-    SCLogInfo("Kafka ring buffer initialized with size %u", size);
+    SCLogInfo("Kafka ring buffer initialized with size %u and max bytes %" PRIu64,
+            size, max_bytes);
     return rb;
 }
 
@@ -127,12 +130,34 @@ static int RingBufferPush(SCEveKafkaRingBuffer *rb, char *data, size_t len)
 
     SCSpinLock(&rb->lock);
 
+    if ((uint64_t)len > rb->max_bytes) {
+        SC_ATOMIC_ADD(rb->dropped, 1);
+        SCSpinUnlock(&rb->lock);
+        SCFree(data);
+        return 0;
+    }
+
     uint32_t next_head = (rb->head + 1) % rb->size;
 
-    /* Check if buffer is full - overwrite oldest */
-    if (next_head == rb->tail) {
+    /* Enforce message count budget first */
+    while (next_head == rb->tail) {
         SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
         if (old_entry->data != NULL) {
+            rb->current_bytes -= old_entry->len;
+            SCFree(old_entry->data);
+            old_entry->data = NULL;
+            old_entry->len = 0;
+            SC_ATOMIC_ADD(rb->dropped, 1);
+        }
+        rb->tail = (rb->tail + 1) % rb->size;
+        next_head = (rb->head + 1) % rb->size;
+    }
+
+    /* Enforce byte budget by dropping oldest entries until message fits */
+    while (rb->head != rb->tail && (rb->current_bytes + len > rb->max_bytes)) {
+        SCEveKafkaRingBufferEntry *old_entry = &rb->entries[rb->tail];
+        if (old_entry->data != NULL) {
+            rb->current_bytes -= old_entry->len;
             SCFree(old_entry->data);
             old_entry->data = NULL;
             old_entry->len = 0;
@@ -145,6 +170,7 @@ static int RingBufferPush(SCEveKafkaRingBuffer *rb, char *data, size_t len)
     SCEveKafkaRingBufferEntry *entry = &rb->entries[rb->head];
     entry->data = data;
     entry->len = len;
+    rb->current_bytes += len;
     rb->head = next_head;
 
     SC_ATOMIC_ADD(rb->pushed, 1);
@@ -168,6 +194,7 @@ static int RingBufferPop(SCEveKafkaRingBuffer *rb, SCEveKafkaRingBufferEntry *en
     if (rb->head != rb->tail) {
         entry->data = rb->entries[rb->tail].data;
         entry->len = rb->entries[rb->tail].len;
+        rb->current_bytes -= entry->len;
 
         rb->entries[rb->tail].data = NULL;
         rb->entries[rb->tail].len = 0;
@@ -958,7 +985,8 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
     }
 
     /* Initialize ring buffer */
-    ctx->ring_buffer = RingBufferInit(ctx->setup.ring_buffer_size);
+    ctx->ring_buffer = RingBufferInit(
+            ctx->setup.ring_buffer_size, (uint64_t)ctx->setup.ring_buffer_max_bytes);
     if (!ctx->ring_buffer) {
         SCLogError("Kafka: Failed to initialize ring buffer");
         goto error;
@@ -1008,9 +1036,11 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
 #endif
 
     *init_data = ctx;
-    SCLogNotice("Kafka producer initialized (brokers: %s, topic: %s, ring_buffer_size: %d, linger_ms: %dms)",
-                ctx->setup.brokers, ctx->setup.topic, ctx->setup.ring_buffer_size,
-                ctx->setup.linger_ms);
+    SCLogNotice("Kafka producer initialized (brokers: %s, topic: %s, ring_buffer_size: %d, "
+                "ring_buffer_max_bytes: %d, queue_buffering_max_kbytes: %d, linger_ms: %dms)",
+            ctx->setup.brokers, ctx->setup.topic, ctx->setup.ring_buffer_size,
+            ctx->setup.ring_buffer_max_bytes, ctx->setup.queue_buffering_max_kbytes,
+            ctx->setup.linger_ms);
     return 0;
 
 error:
@@ -1126,7 +1156,7 @@ static void KafkaTestDestroyBaseConfig(KafkaSetup *setup)
 
 static int KafkaTestRingBufferBasic(void)
 {
-    SCEveKafkaRingBuffer *rb = RingBufferInit(16);
+    SCEveKafkaRingBuffer *rb = RingBufferInit(16, KAFKA_RING_BUFFER_MAX_BYTES);
     if (rb == NULL) {
         return 0;
     }
@@ -1159,7 +1189,7 @@ static int KafkaTestRingBufferBasic(void)
 
 static int KafkaTestRingBufferOverflow(void)
 {
-    SCEveKafkaRingBuffer *rb = RingBufferInit(4);
+    SCEveKafkaRingBuffer *rb = RingBufferInit(4, KAFKA_RING_BUFFER_MAX_BYTES);
     if (rb == NULL) {
         return 0;
     }
@@ -1196,6 +1226,61 @@ static int KafkaTestParseConfigDefaults(void)
     FAIL_IF(setup.queue_buffering_max_kbytes != KAFKA_QUEUE_BUFFERING_MAX_KBYTES);
 
     KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestRingBufferByteBudgetDropOldest(void)
+{
+    SCEveKafkaRingBuffer *rb = RingBufferInit(8, 16);
+    FAIL_IF_NULL(rb);
+
+    char *data1 = SCMalloc(8);
+    FAIL_IF_NULL(data1);
+    strcpy(data1, "first");
+    FAIL_IF(RingBufferPush(rb, data1, 8) != 0);
+
+    char *data2 = SCMalloc(8);
+    FAIL_IF_NULL(data2);
+    strcpy(data2, "second");
+    FAIL_IF(RingBufferPush(rb, data2, 8) != 0);
+
+    char *data3 = SCMalloc(8);
+    FAIL_IF_NULL(data3);
+    strcpy(data3, "third");
+    FAIL_IF(RingBufferPush(rb, data3, 8) != 0);
+
+    FAIL_IF(SC_ATOMIC_GET(rb->dropped) != 1);
+
+    SCEveKafkaRingBufferEntry entry;
+    FAIL_IF(RingBufferPop(rb, &entry) != 0);
+    FAIL_IF(strcmp(entry.data, "second") != 0);
+    SCFree(entry.data);
+
+    FAIL_IF(RingBufferPop(rb, &entry) != 0);
+    FAIL_IF(strcmp(entry.data, "third") != 0);
+    SCFree(entry.data);
+
+    FAIL_IF(RingBufferPop(rb, &entry) != -1);
+    RingBufferDestroy(rb);
+    PASS;
+}
+
+static int KafkaTestRingBufferByteBudgetOversizedDrop(void)
+{
+    SCEveKafkaRingBuffer *rb = RingBufferInit(8, 8);
+    FAIL_IF_NULL(rb);
+
+    char *data = SCMalloc(16);
+    FAIL_IF_NULL(data);
+    strcpy(data, "oversized");
+    FAIL_IF(RingBufferPush(rb, data, 16) != 0);
+    FAIL_IF(SC_ATOMIC_GET(rb->dropped) != 1);
+    FAIL_IF(rb->current_bytes != 0);
+
+    SCEveKafkaRingBufferEntry entry;
+    FAIL_IF(RingBufferPop(rb, &entry) != -1);
+
+    RingBufferDestroy(rb);
     PASS;
 }
 
@@ -1298,6 +1383,10 @@ void SCEveKafkaInitialize(void)
 #ifdef UNITTESTS
     UtRegisterTest("KafkaTestRingBufferBasic", KafkaTestRingBufferBasic);
     UtRegisterTest("KafkaTestRingBufferOverflow", KafkaTestRingBufferOverflow);
+    UtRegisterTest("KafkaTestRingBufferByteBudgetDropOldest",
+            KafkaTestRingBufferByteBudgetDropOldest);
+    UtRegisterTest("KafkaTestRingBufferByteBudgetOversizedDrop",
+            KafkaTestRingBufferByteBudgetOversizedDrop);
     UtRegisterTest("KafkaTestParseConfigDefaults", KafkaTestParseConfigDefaults);
     UtRegisterTest("KafkaTestParseConfigInvalidRingBufferMaxBytes",
             KafkaTestParseConfigInvalidRingBufferMaxBytes);
