@@ -166,7 +166,6 @@ typedef struct SCEveKafkaContext_ {
     /* Statistics - atomic for thread-safe updates */
     SC_ATOMIC_DECLARE(uint64_t, messages_sent);
     SC_ATOMIC_DECLARE(uint64_t, messages_failed);
-    SC_ATOMIC_DECLARE(uint64_t, messages_dropped);
     SC_ATOMIC_DECLARE(uint64_t, messages_dropped_queue);
     SC_ATOMIC_DECLARE(uint64_t, messages_dropped_produce);
     SC_ATOMIC_DECLARE(uint64_t, bytes_sent);

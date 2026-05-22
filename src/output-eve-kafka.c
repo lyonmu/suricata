@@ -1223,7 +1223,6 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
     /* Initialize atomic statistics - must be done before thread starts */
     SC_ATOMIC_INIT(ctx->messages_sent);
     SC_ATOMIC_INIT(ctx->messages_failed);
-    SC_ATOMIC_INIT(ctx->messages_dropped);
     SC_ATOMIC_INIT(ctx->messages_dropped_queue);
     SC_ATOMIC_INIT(ctx->messages_dropped_produce);
     SC_ATOMIC_INIT(ctx->bytes_sent);
@@ -1885,11 +1884,7 @@ static int KafkaTestDrainRoundRobinFairness(void)
 
     SCFree(dctx.produced[0]);
     SCFree(dctx.produced[1]);
-    KafkaQueueDestroy(q0);
-    KafkaQueueDestroy(q1);
-    SCFree(registry->queues);
-    SCMutexDestroy(&registry->lock);
-    SCFree(registry);
+    KafkaQueueRegistryDestroy(registry);
     PASS;
 }
 
@@ -1907,9 +1902,7 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
     FAIL_IF(dctx.poll_count != 1);
     FAIL_IF(dctx.poll_timeouts[0] != 17);
 
-    SCFree(registry->queues);
-    SCMutexDestroy(&registry->lock);
-    SCFree(registry);
+    KafkaQueueRegistryDestroy(registry);
     PASS;
 }
 
