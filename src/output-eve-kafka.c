@@ -1315,22 +1315,13 @@ static int KafkaWrite(const char *buffer, const int buffer_len,
         return 0;
     }
 
-    char *data = SCMalloc((size_t)buffer_len + 1);
-    if (data == NULL) {
-        SC_ATOMIC_ADD(ctx->messages_dropped_queue, 1);
-        return 0;
-    }
-    memcpy(data, buffer, (size_t)buffer_len);
-    data[buffer_len] = '\0';
-
-    KafkaQueuePushResult ret = KafkaQueuePush(td->queue, (const uint8_t *)data, (size_t)buffer_len);
+    KafkaQueuePushResult ret = KafkaQueuePush(td->queue, (const uint8_t *)buffer, (size_t)buffer_len);
     if (ret == KAFKA_QUEUE_PUSH_OK) {
         SC_ATOMIC_ADD(ctx->messages_queued, 1);
         SC_ATOMIC_ADD(ctx->bytes_queued, (uint64_t)buffer_len);
     } else {
         SC_ATOMIC_ADD(ctx->messages_dropped_queue, 1);
     }
-    SCFree(data);
     return 0;
 }
 
