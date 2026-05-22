@@ -34,7 +34,7 @@
 /* Default values for configuration */
 #define KAFKA_RING_BUFFER_SIZE_DEFAULT    65536    /* Ring buffer capacity (configurable) */
 #define KAFKA_RING_BUFFER_MAX_BYTES       67108864 /* Ring buffer max bytes (64MB) */
-#define KAFKA_TOPIC_PARTITIONS_DEFAULT    1
+#define KAFKA_TOPIC_PARTITIONS_DEFAULT    3
 #define KAFKA_MAX_DRAIN_BATCH_DEFAULT     256
 #define KAFKA_IDLE_POLL_MS_DEFAULT        10
 

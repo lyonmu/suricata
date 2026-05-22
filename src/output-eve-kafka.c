@@ -82,8 +82,9 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
         int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len);
 static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
-        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
+        uint32_t max_batch, int idle_poll_ms, const char *topic,
+        KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
+        KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
@@ -162,8 +163,9 @@ static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
 }
 
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
-        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
+        uint32_t max_batch, int idle_poll_ms, const char *topic,
+        KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
+        KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
 {
     uint32_t total_drained = 0;
     bool did_work = false;
@@ -193,7 +195,7 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
             if (entry == NULL) {
                 break;
             }
-            rd_kafka_resp_err_t err = produce_hook(produce_ctx, "eve",
+            rd_kafka_resp_err_t err = produce_hook(produce_ctx, topic,
                     RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
             if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
                 /* produce failed, entry data lost — counted by produce hook */
@@ -1120,7 +1122,7 @@ static void *KafkaProducerThread(void *arg)
 
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
-                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
+                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         if (drained == 0) {
             usleep(1000);
@@ -1137,7 +1139,7 @@ static void *KafkaProducerThread(void *arg)
     uint32_t pass = 0;
     while (1) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
-                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
+                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         remaining += drained;
         if (drained == 0)
@@ -1600,7 +1602,7 @@ static int KafkaTestParseConfigHighThroughputDefaults(void)
 
     FAIL_IF(setup.partition != RD_KAFKA_PARTITION_UA);
     FAIL_IF(setup.topic_auto_create != false);
-    FAIL_IF(setup.topic_partitions != 1);
+    FAIL_IF(setup.topic_partitions != 3);
     FAIL_IF(setup.max_drain_batch != 256);
     FAIL_IF(setup.idle_poll_ms != 10);
 
@@ -1855,7 +1857,7 @@ static int KafkaTestDrainRoundRobinFairness(void)
     FAIL_IF(KafkaQueuePush(q1, data2, sizeof(data2)) != KAFKA_QUEUE_PUSH_OK);
 
     KafkaTestDrainCtx dctx = { 0 };
-    uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10,
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10, "test-topic",
             KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 2);
@@ -1885,7 +1887,7 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
     FAIL_IF_NULL(registry);
 
     KafkaTestDrainCtx dctx = { 0 };
-    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17,
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17, "test-topic",
             KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 0);
