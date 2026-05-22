@@ -1182,6 +1182,9 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
     return 0;
 
 error:
+    if (ctx->registry) {
+        KafkaQueueRegistryDestroy(ctx->registry);
+    }
     if (ctx->rk) rd_kafka_destroy(ctx->rk);
     KafkaFreeConfig(&ctx->setup);
     SCFree(ctx);
