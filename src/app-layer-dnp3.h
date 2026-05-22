@@ -112,6 +112,7 @@ enum {
     DNP3_DECODER_EVENT_UNKNOWN_OBJECT,
     DNP3_DECODER_EVENT_TOO_MANY_POINTS,
     DNP3_DECODER_EVENT_TOO_MANY_OBJECTS,
+    DNP3_DECODER_EVENT_TOO_LONG_REASS,
 };
 
 /**
@@ -220,7 +221,7 @@ typedef struct DNP3Transaction_ {
     struct DNP3State_ *dnp3;
 
     uint8_t *buffer; /**< Reassembled request buffer. */
-    uint32_t buffer_len;
+    uint16_t buffer_len;
     DNP3ObjectList objects;
     DNP3LinkHeader lh;
     DNP3TransportHeader th;

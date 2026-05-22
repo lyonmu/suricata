@@ -317,7 +317,7 @@ impl NFSState {
             };
         }
 
-        self.requestmap.insert(r.hdr.xid, xidmap);
+        self.requestmap.put(r.hdr.xid, xidmap);
     }
 
     fn compound_response<'b>(
@@ -376,7 +376,7 @@ impl NFSState {
                 }
                 Nfs4ResponseContent::GetFH(_s, Some(ref rd)) if insert_filename_with_getfh => {
                     self.namemap
-                        .insert(rd.value.to_vec(), xidmap.file_name.to_vec());
+                        .put(rd.value.to_vec(), xidmap.file_name.to_vec());
                 }
                 Nfs4ResponseContent::PutRootFH(s) if s == NFS4_OK && xidmap.file_name.is_empty() => {
                         xidmap.file_name = b"<mount_root>".to_vec();

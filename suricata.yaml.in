@@ -1068,6 +1068,8 @@ app-layer:
       #max-reassembly-size: 102400
       # Maximum number of frames per tx
       #max-frames: 65536
+      # Maximum data to decompress if the decompress ratio is too high
+      #compression-bomb-limit: 1MiB
     smtp:
       enabled: yes
       raw-extraction: no
@@ -1324,6 +1326,8 @@ app-layer:
           dp: 389, 3268
       # Maximum number of live LDAP transactions per flow
       # max-tx: 1024
+      # Maximum number of responses per LDAP transaction
+      # max-responses: 1024
 
     mdns:
       enabled: yes

@@ -22,7 +22,7 @@ use super::range;
 
 use super::range::{SCHTPFileCloseHandleRange, SCHttpRangeFreeBlock};
 use crate::applayer::{self, *};
-use crate::conf::conf_get;
+use crate::conf::{conf_get, get_memval};
 use crate::core::*;
 use crate::direction::Direction;
 use crate::dns::dns::DnsVariant;
@@ -45,6 +45,7 @@ use suricata_sys::sys::{
     SCAppLayerProtoDetectConfProtoDetectionEnabled, SCFileFlowFlagsToFlags,
     SCHTTP2MimicHttp1Request,
 };
+use suricata_sys::sys::AppProtoEnum::ALPROTO_HTTP1;
 
 static mut ALPROTO_HTTP2: AppProto = ALPROTO_UNKNOWN;
 static mut ALPROTO_DOH2: AppProto = ALPROTO_UNKNOWN;
@@ -80,6 +81,7 @@ pub static mut HTTP2_MAX_TABLESIZE: u32 = 65536; // 0x10000
 static mut HTTP2_MAX_REASS: usize = 102400;
 static mut HTTP2_MAX_STREAMS: usize = 4096; // 0x1000
 static mut HTTP2_MAX_FRAMES: usize = 65536;
+pub(super) static mut HTTP2_COMPRESSION_BOMB_LIMIT: u64 = 1_048_576;
 
 #[derive(AppLayerFrameType)]
 pub enum Http2FrameType {
@@ -495,6 +497,41 @@ impl HTTP2Transaction {
             }
         }
     }
+
+    fn handle_data_frame(
+        &mut self, rem: &[u8], hlsafe: usize, dir: Direction, flow: *mut Flow, padded: bool,
+        over: bool,
+    ) {
+        match unsafe { SURICATA_HTTP2_FILE_CONFIG } {
+            Some(sfcm) => {
+                if dir == Direction::ToServer {
+                    self.ft_tc.tx_id = self.tx_id - 1;
+                } else {
+                    self.ft_ts.tx_id = self.tx_id - 1;
+                };
+                let mut dinput = &rem[..hlsafe];
+                if padded && !rem.is_empty() && usize::from(rem[0]) < hlsafe {
+                    dinput = &rem[1..hlsafe - usize::from(rem[0])];
+                }
+                let mut output = Vec::with_capacity(decompression::HTTP2_DECOMPRESSION_CHUNK_SIZE);
+                match self.decompress(dinput, &mut output, dir, sfcm, over, flow) {
+                    Ok(_) => {
+                        if over {
+                            self.handle_dns_data(dir, flow);
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::OutOfMemory {
+                            self.set_event(HTTP2Event::CompressionBomb);
+                        } else {
+                            self.set_event(HTTP2Event::FailedDecompression);
+                        }
+                    }
+                }
+            }
+            None => panic!("no SURICATA_HTTP2_FILE_CONFIG"),
+        }
+    }
 }
 
 impl Drop for HTTP2Transaction {
@@ -529,6 +566,7 @@ pub enum HTTP2Event {
     DnsResponseTooLong,
     DataStreamZero,
     TooManyFrames,
+    CompressionBomb,
 }
 
 pub struct HTTP2DynTable {
@@ -571,6 +609,9 @@ pub struct HTTP2State {
     transactions: VecDeque<HTTP2Transaction>,
     progress: HTTP2ConnectionState,
 
+    comp_len: u64,
+    decomp_len: u64,
+
     c2s_buf: HTTP2HeaderReassemblyBuffer,
     s2c_buf: HTTP2HeaderReassemblyBuffer,
 }
@@ -605,6 +646,8 @@ impl HTTP2State {
             dynamic_headers_tc: HTTP2DynTable::new(),
             transactions: VecDeque::new(),
             progress: HTTP2ConnectionState::Http2StateInit,
+            comp_len: 0,
+            decomp_len: 0,
             c2s_buf: HTTP2HeaderReassemblyBuffer::default(),
             s2c_buf: HTTP2HeaderReassemblyBuffer::default(),
         }
@@ -1202,6 +1245,7 @@ impl HTTP2State {
                         &mut reass_limit_reached,
                     );
 
+                    let (comp_len, decomp_len) = (self.comp_len, self.decomp_len);
                     let tx = self.find_or_create_tx(&head, &txdata, dir);
                     if tx.is_none() {
                         return AppLayerResult::err();
@@ -1257,44 +1301,28 @@ impl HTTP2State {
                     if ftype == parser::HTTP2FrameType::Data as u8 && sid == 0 {
                         tx.tx_data.set_event(HTTP2Event::DataStreamZero as u8);
                     } else if ftype == parser::HTTP2FrameType::Data as u8 && sid > 0 {
-                        match unsafe { SURICATA_HTTP2_FILE_CONFIG } {
-                            Some(sfcm) => {
-                                //borrow checker forbids to reuse directly tx
-                                let index = self.find_tx_index(sid);
-                                if index > 0 {
-                                    let tx_same = &mut self.transactions[index - 1];
-                                    if dir == Direction::ToServer {
-                                        tx_same.ft_tc.tx_id = tx_same.tx_id - 1;
-                                    } else {
-                                        tx_same.ft_ts.tx_id = tx_same.tx_id - 1;
-                                    };
-                                    let mut dinput = &rem[..hlsafe];
-                                    if padded && !rem.is_empty() && usize::from(rem[0]) < hlsafe {
-                                        dinput = &rem[1..hlsafe - usize::from(rem[0])];
-                                    }
-                                    let mut output = Vec::with_capacity(
-                                        decompression::HTTP2_DECOMPRESSION_CHUNK_SIZE,
-                                    );
-                                    match tx_same.decompress(
-                                        dinput,
-                                        &mut output,
-                                        dir,
-                                        sfcm,
-                                        over,
-                                        flow,
-                                    ) {
-                                        Ok(_) => {
-                                            if over {
-                                                tx_same.handle_dns_data(dir, flow);
-                                            }
-                                        }
-                                        _ => {
-                                            self.set_event(HTTP2Event::FailedDecompression);
-                                        }
-                                    }
-                                }
+                        tx.handle_data_frame(rem, hlsafe, dir, flow, padded, over);
+                        let (il, ol) = if dir == Direction::ToClient {
+                            (
+                                tx.decoder.decoder_tc.input_len,
+                                tx.decoder.decoder_tc.output_len,
+                            )
+                        } else {
+                            (
+                                tx.decoder.decoder_ts.input_len,
+                                tx.decoder.decoder_ts.output_len,
+                            )
+                        };
+                        let (il, ol) = (il + comp_len, ol + decomp_len);
+                        if ol > decompression::DEFAULT_BOMB_RATIO * il {
+                            if ol > unsafe { HTTP2_COMPRESSION_BOMB_LIMIT } {
+                                tx.set_event(HTTP2Event::CompressionBomb);
+                                return AppLayerResult::err();
                             }
-                            None => panic!("no SURICATA_HTTP2_FILE_CONFIG"),
+                            if over {
+                                self.comp_len += il;
+                                self.decomp_len += ol;
+                            }
                         }
                     }
                     sc_app_layer_parser_trigger_raw_stream_inspection(flow, dir as i32);
@@ -1441,13 +1469,12 @@ unsafe extern "C" fn http2_probing_parser_tc(
 // is typically not unsafe.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 extern "C" fn http2_state_new(
-    orig_state: *mut std::os::raw::c_void, _orig_proto: AppProto,
+    orig_state: *mut std::os::raw::c_void, orig_proto: AppProto,
 ) -> *mut std::os::raw::c_void {
     let state = HTTP2State::new();
     let boxed = Box::new(state);
     let r = Box::into_raw(boxed) as *mut _;
-    if !orig_state.is_null() {
-        //we could check ALPROTO_HTTP1 == orig_proto
+    if !orig_state.is_null() && orig_proto == ALPROTO_HTTP1 as u16 {
         unsafe {
             SCHTTP2MimicHttp1Request(orig_state, r);
         }
@@ -1605,6 +1632,13 @@ pub unsafe extern "C" fn SCRegisterHttp2Parser() {
                 HTTP2_MAX_REASS = v as usize;
             } else {
                 SCLogError!("Invalid value for http2.max-reassembly-size");
+            }
+        }
+        if let Some(val) = conf_get("app-layer.protocols.http2.compression-bomb-limit") {
+            if let Ok(v) = get_memval(val) {
+                HTTP2_COMPRESSION_BOMB_LIMIT = v;
+            } else {
+                SCLogWarning!("Invalid value for http2.compression-bomb-limit");
             }
         }
         SCAppLayerParserRegisterLogger(IPPROTO_TCP, ALPROTO_HTTP2);

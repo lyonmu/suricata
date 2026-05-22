@@ -267,9 +267,7 @@ static void *TcpSegmentPoolAlloc(void)
         return NULL;
     }
 
-    TcpSegment *seg = NULL;
-
-    seg = SCMalloc(sizeof (TcpSegment));
+    TcpSegment *seg = SCMalloc(sizeof(TcpSegment));
     if (unlikely(seg == NULL))
         return NULL;
 
@@ -283,22 +281,21 @@ static void *TcpSegmentPoolAlloc(void)
 
         seg->pcap_hdr_storage = SCCalloc(1, sizeof(TcpSegmentPcapHdrStorage));
         if (seg->pcap_hdr_storage == NULL) {
-            SCLogError("Unable to allocate memory for "
+            SCLogDebug("Unable to allocate memory for "
                        "TcpSegmentPcapHdrStorage");
             SCFree(seg);
             return NULL;
-        } else {
-            seg->pcap_hdr_storage->alloclen = sizeof(uint8_t) * TCPSEG_PKT_HDR_DEFAULT_SIZE;
-            seg->pcap_hdr_storage->pkt_hdr =
-                    SCCalloc(1, sizeof(uint8_t) * TCPSEG_PKT_HDR_DEFAULT_SIZE);
-            if (seg->pcap_hdr_storage->pkt_hdr == NULL) {
-                SCLogError("Unable to allocate memory for "
-                           "packet header data within "
-                           "TcpSegmentPcapHdrStorage");
-                SCFree(seg->pcap_hdr_storage);
-                SCFree(seg);
-                return NULL;
-            }
+        }
+
+        seg->pcap_hdr_storage->alloclen = sizeof(uint8_t) * TCPSEG_PKT_HDR_DEFAULT_SIZE;
+        seg->pcap_hdr_storage->pkt_hdr = SCCalloc(1, sizeof(uint8_t) * TCPSEG_PKT_HDR_DEFAULT_SIZE);
+        if (seg->pcap_hdr_storage->pkt_hdr == NULL) {
+            SCLogDebug("Unable to allocate memory for "
+                       "packet header data within "
+                       "TcpSegmentPcapHdrStorage");
+            SCFree(seg->pcap_hdr_storage);
+            SCFree(seg);
+            return NULL;
         }
 
         StreamTcpReassembleIncrMemuse(memuse);
@@ -309,7 +306,7 @@ static void *TcpSegmentPoolAlloc(void)
     return seg;
 }
 
-static int TcpSegmentPoolInit(void *data, void *initdata)
+static int TcpSegmentPoolInit(void *data)
 {
     TcpSegment *seg = (TcpSegment *) data;
     TcpSegmentPcapHdrStorage *pcap_hdr;
@@ -353,7 +350,7 @@ static void TcpSegmentPoolCleanup(void *ptr)
         return;
 
     TcpSegment *seg = (TcpSegment *)ptr;
-    if (seg && seg->pcap_hdr_storage) {
+    if (seg->pcap_hdr_storage) {
         if (seg->pcap_hdr_storage->pkt_hdr) {
             SCFree(seg->pcap_hdr_storage->pkt_hdr);
             StreamTcpReassembleDecrMemuse(seg->pcap_hdr_storage->alloclen);
@@ -567,12 +564,9 @@ TcpReassemblyThreadCtx *StreamTcpReassembleInitThreadCtx(ThreadVars *tv)
     SCMutexLock(&segment_thread_pool_mutex);
     if (segment_thread_pool == NULL) {
         segment_thread_pool = PoolThreadInit(1, /* thread */
-                0, /* unlimited */
-                stream_config.prealloc_segments,
-                sizeof(TcpSegment),
-                TcpSegmentPoolAlloc,
-                TcpSegmentPoolInit, NULL,
-                TcpSegmentPoolCleanup, NULL);
+                0,                              /* unlimited */
+                stream_config.prealloc_segments, sizeof(TcpSegment), TcpSegmentPoolAlloc,
+                TcpSegmentPoolInit, TcpSegmentPoolCleanup);
         ra_ctx->segment_thread_pool_id = 0;
         SCLogDebug("pool size %d, thread segment_thread_pool_id %d",
                 PoolThreadSize(segment_thread_pool),
@@ -2127,7 +2121,6 @@ TcpSegment *StreamTcpGetSegment(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx)
     TcpSegment *seg = StreamTcpThreadCacheGetSegment();
     if (seg) {
         StatsCounterIncr(&tv->stats, ra_ctx->counter_tcp_segment_from_cache);
-        memset(&seg->sbseg, 0, sizeof(seg->sbseg));
         return seg;
     }
 

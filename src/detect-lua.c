@@ -111,10 +111,8 @@ void DetectLuaRegister(void)
 /* Flags for DetectLuaThreadData. */
 #define FLAG_DATATYPE_PACKET                    BIT_U32(0)
 #define FLAG_DATATYPE_PAYLOAD                   BIT_U32(1)
-#define FLAG_DATATYPE_STREAM                    BIT_U32(2)
 #define FLAG_LIST_JA3                           BIT_U32(3)
 #define FLAG_LIST_JA3S                          BIT_U32(4)
-#define FLAG_DATATYPE_BUFFER                    BIT_U32(22)
 #define FLAG_ERROR_LOGGED                       BIT_U32(23)
 #define FLAG_BLOCKED_FUNCTION_LOGGED            BIT_U32(24)
 #define FLAG_INSTRUCTION_LIMIT_LOGGED           BIT_U32(25)
@@ -395,7 +393,7 @@ static int DetectLuaAppTxMatch (DetectEngineThreadCtx *det_ctx,
 static const char *ut_script = NULL;
 #endif
 
-static void *DetectLuaThreadInit(void *data)
+static void *DetectLuaThreadInit(void *data, bool allow_restricted_functions)
 {
     int status;
     DetectLuaData *lua = (DetectLuaData *)data;
@@ -415,7 +413,7 @@ static void *DetectLuaThreadInit(void *data)
         goto error;
     }
 
-    if (lua->allow_restricted_functions) {
+    if (allow_restricted_functions) {
         luaL_openlibs(t->luastate);
         SCLuaRequirefBuiltIns(t->luastate);
     } else {
@@ -470,6 +468,16 @@ error:
     return NULL;
 }
 
+static void *DetectLuaThreadRestrictedInit(void *data)
+{
+    return DetectLuaThreadInit(data, false);
+}
+
+static void *DetectLuaThreadAllowInit(void *data)
+{
+    return DetectLuaThreadInit(data, true);
+}
+
 static void DetectLuaThreadFree(void *ctx)
 {
     if (ctx != NULL) {
@@ -516,14 +524,15 @@ error:
     return NULL;
 }
 
-static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld, const Signature *s)
+static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld, const Signature *s,
+        int allow_restricted_functions)
 {
     int status;
 
     lua_State *luastate = SCLuaSbStateNew(ld->alloc_limit, ld->instruction_limit);
     if (luastate == NULL)
         return -1;
-    if (ld->allow_restricted_functions) {
+    if (allow_restricted_functions) {
         luaL_openlibs(luastate);
         SCLuaRequirefBuiltIns(luastate);
     } else {
@@ -654,16 +663,12 @@ static int DetectLuaSetupPrime(DetectEngineCtx *de_ctx, DetectLuaData *ld, const
         } else if (strcmp(k, "payload") == 0) {
             ld->flags |= FLAG_DATATYPE_PAYLOAD;
         } else if (strcmp(k, "buffer") == 0) {
-            ld->flags |= FLAG_DATATYPE_BUFFER;
-
             ld->buffername = SCStrdup("buffer");
             if (ld->buffername == NULL) {
                 SCLogError("alloc error");
                 goto error;
             }
         } else if (strcmp(k, "stream") == 0) {
-            ld->flags |= FLAG_DATATYPE_STREAM;
-
             ld->buffername = SCStrdup("stream");
             if (ld->buffername == NULL) {
                 SCLogError("alloc error");
@@ -726,15 +731,18 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, const char *st
 
     int allow_restricted_functions = 0;
     (void)SCConfGetBool("security.lua.allow-restricted-functions", &allow_restricted_functions);
-    lua->allow_restricted_functions = allow_restricted_functions;
 
-    if (DetectLuaSetupPrime(de_ctx, lua, s) == -1) {
+    if (DetectLuaSetupPrime(de_ctx, lua, s, allow_restricted_functions) == -1) {
         goto error;
     }
 
-    lua->thread_ctx_id = DetectRegisterThreadCtxFuncs(de_ctx, "lua",
-            DetectLuaThreadInit, (void *)lua,
-            DetectLuaThreadFree, 0);
+    void *cb = DetectLuaThreadRestrictedInit;
+    if (allow_restricted_functions) {
+        cb = DetectLuaThreadAllowInit;
+    }
+
+    lua->thread_ctx_id =
+            DetectRegisterThreadCtxFuncs(de_ctx, "lua", cb, (void *)lua, DetectLuaThreadFree, 0);
     if (lua->thread_ctx_id == -1)
         goto error;
 

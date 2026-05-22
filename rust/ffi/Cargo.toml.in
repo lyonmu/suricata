@@ -10,3 +10,5 @@ suricata-sys = { path = "../sys" }
 
 [features]
 debug = []
+debug-validate = []
+testing = []
