@@ -71,6 +71,9 @@ typedef void (*KafkaPollHookFunc)(void *ctx, const int timeout_ms);
 static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
         char *data, const size_t len, KafkaProduceHookFunc produce_hook,
         KafkaPollHookFunc poll_hook, uint32_t *retries_out);
+typedef int (*KafkaCreateTopicHookFunc)(void *ctx, const char *topic, int32_t partition_count);
+static int KafkaMaybeCreateTopic(const KafkaSetup *setup, const char *topic,
+        KafkaCreateTopicHookFunc hook, void *hook_ctx);
 typedef rd_kafka_resp_err_t (*KafkaDrainProduceHookFunc)(
         void *ctx, const char *topic, int32_t partition,
         const uint8_t *data, size_t len, const void *key, size_t key_len);
@@ -1077,6 +1080,23 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
     return ret;
 }
 
+static int KafkaCreateTopicHook(void *ctx, const char *topic, int32_t partition_count)
+{
+    SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
+    return KafkaCreateTopic(kctx->rk, topic, partition_count, 10000);
+}
+
+static int KafkaMaybeCreateTopic(const KafkaSetup *setup, const char *topic,
+        KafkaCreateTopicHookFunc hook, void *hook_ctx)
+{
+    if (!setup->topic_auto_create) {
+        SCLogNotice("Kafka: topic auto-create disabled, skipping topic creation for %s", topic);
+        return 0;
+    }
+    SCLogNotice("Kafka: creating topic %s with %d partitions", topic, setup->topic_partitions);
+    return hook(hook_ctx, topic, setup->topic_partitions);
+}
+
 /**
  * \brief Background producer thread
  *
@@ -1196,10 +1216,8 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
         goto error;
     }
 
-    /* Create topic with specified partition count */
-    if (KafkaCreateTopic(ctx->rk, ctx->setup.topic, ctx->setup.partition, 10000) != 0) {
-        SCLogError("Kafka: Failed to create topic '%s'", ctx->setup.topic);
-        goto error;
+    if (KafkaMaybeCreateTopic(&ctx->setup, ctx->setup.topic, KafkaCreateTopicHook, ctx) != 0) {
+        SCLogWarning("Kafka: topic creation failed for %s (may already exist)", ctx->setup.topic);
     }
 
     /* Initialize atomic statistics - must be done before thread starts */
@@ -1268,11 +1286,20 @@ static void KafkaDeinit(void *init_data)
     /* Free configuration */
     KafkaFreeConfig(&ctx->setup);
 
-    /* Log final statistics */
-    SCLogInfo("Kafka: Shutdown complete. Sent: %"PRIu64", Failed: %"PRIu64", Dropped: %"PRIu64,
-              SC_ATOMIC_GET(ctx->messages_sent),
-              SC_ATOMIC_GET(ctx->messages_failed),
-              SC_ATOMIC_GET(ctx->messages_dropped));
+    /* Log comprehensive shutdown statistics */
+    uint64_t queued = SC_ATOMIC_GET(ctx->messages_queued);
+    uint64_t sent = SC_ATOMIC_GET(ctx->messages_sent);
+    uint64_t failed = SC_ATOMIC_GET(ctx->messages_failed);
+    uint64_t dropped_queue = SC_ATOMIC_GET(ctx->messages_dropped_queue);
+    uint64_t dropped_produce = SC_ATOMIC_GET(ctx->messages_dropped_produce);
+    uint64_t dropped_total = dropped_queue + dropped_produce;
+    uint64_t bytes = SC_ATOMIC_GET(ctx->bytes_sent);
+
+    SCLogNotice("Kafka: shutdown stats: queued=%" PRIu64 " sent=%" PRIu64
+                " failed=%" PRIu64 " dropped_queue=%" PRIu64
+                " dropped_produce=%" PRIu64 " dropped_total=%" PRIu64
+                " bytes=%" PRIu64,
+            queued, sent, failed, dropped_queue, dropped_produce, dropped_total, bytes);
 
     SCFree(ctx);
 }
@@ -1886,6 +1913,49 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
     PASS;
 }
 
+typedef struct KafkaTestCreateTopicCtx_ {
+    const char *topic;
+    int32_t partition_count;
+    int call_count;
+} KafkaTestCreateTopicCtx;
+
+static int KafkaTestCreateTopicHook(void *ctx, const char *topic, int32_t partition_count)
+{
+    KafkaTestCreateTopicCtx *tctx = (KafkaTestCreateTopicCtx *)ctx;
+    tctx->topic = topic;
+    tctx->partition_count = partition_count;
+    tctx->call_count++;
+    return 0;
+}
+
+static int KafkaTestTopicCreateAutoCreateDisabled(void)
+{
+    KafkaSetup setup = { 0 };
+    setup.topic_auto_create = false;
+    setup.topic_partitions = 4;
+
+    KafkaTestCreateTopicCtx tctx = { 0 };
+    int ret = KafkaMaybeCreateTopic(&setup, "test-topic", KafkaTestCreateTopicHook, &tctx);
+    FAIL_IF(ret != 0);
+    FAIL_IF(tctx.call_count != 0);
+    PASS;
+}
+
+static int KafkaTestTopicCreateAutoCreateEnabled(void)
+{
+    KafkaSetup setup = { 0 };
+    setup.topic_auto_create = true;
+    setup.topic_partitions = 4;
+
+    KafkaTestCreateTopicCtx tctx = { 0 };
+    int ret = KafkaMaybeCreateTopic(&setup, "test-topic", KafkaTestCreateTopicHook, &tctx);
+    FAIL_IF(ret != 0);
+    FAIL_IF(tctx.call_count != 1);
+    FAIL_IF(tctx.partition_count != 4);
+    FAIL_IF(strcmp(tctx.topic, "test-topic") != 0);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1953,6 +2023,8 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestKafkaWriteUsesThreadQueue", KafkaTestKafkaWriteUsesThreadQueue);
     UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);
     UtRegisterTest("KafkaTestDrainIdlePollsWithTimeout", KafkaTestDrainIdlePollsWithTimeout);
+    UtRegisterTest("KafkaTestTopicCreateAutoCreateDisabled", KafkaTestTopicCreateAutoCreateDisabled);
+    UtRegisterTest("KafkaTestTopicCreateAutoCreateEnabled", KafkaTestTopicCreateAutoCreateEnabled);
 #endif
 }
 
