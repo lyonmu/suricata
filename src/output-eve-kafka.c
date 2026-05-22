@@ -1089,6 +1089,7 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
     SC_ATOMIC_INIT(ctx->messages_dropped);
     SC_ATOMIC_INIT(ctx->bytes_sent);
     SC_ATOMIC_INIT(ctx->delivery_callback_count);
+    SC_ATOMIC_INIT(ctx->stop_flag);
     SC_ATOMIC_SET(ctx->stop_flag, 0);
 
     /* Start producer thread */
