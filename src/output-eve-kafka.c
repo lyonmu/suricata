@@ -347,7 +347,7 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
         setup->metadata_max_age_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "retry-backoff-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("retry-backoff-ms", intval) != 0) {
+        if (KafkaValidateInt("retry-backoff-ms", intval, 0) != 0) {
             goto error;
         }
         setup->retry_backoff_ms = (int)intval;
@@ -1253,6 +1253,20 @@ static int KafkaTestParseConfigInvalidRetryBackoffOrder(void)
     PASS;
 }
 
+static int KafkaTestParseConfigValidRetryBackoffZero(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.retry-backoff-ms", "0"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
+    FAIL_IF(setup.retry_backoff_ms != 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1292,6 +1306,8 @@ void SCEveKafkaInitialize(void)
             KafkaTestParseConfigInvalidReconnectBackoffOrder);
     UtRegisterTest("KafkaTestParseConfigInvalidRetryBackoffOrder",
             KafkaTestParseConfigInvalidRetryBackoffOrder);
+    UtRegisterTest("KafkaTestParseConfigValidRetryBackoffZero",
+            KafkaTestParseConfigValidRetryBackoffZero);
 #endif
 }
 
