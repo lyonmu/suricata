@@ -76,7 +76,7 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
         int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len);
 static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic,
+        uint32_t max_batch, int idle_poll_ms, const char *topic, int32_t partition,
         KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
         KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
@@ -123,7 +123,6 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
         int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len)
 {
     SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
-    (void)partition;
     (void)key;
     (void)key_len;
 
@@ -132,8 +131,9 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
     uint32_t retries = 0;
     while (1) {
         rd_kafka_resp_err_t ret = rd_kafka_producev(kctx->rk,
-                RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_VALUE((void *)data, len),
-                RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY), RD_KAFKA_V_END);
+                RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_PARTITION(partition),
+                RD_KAFKA_V_VALUE((void *)data, len), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+                RD_KAFKA_V_END);
         if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
             return ret;
         }
@@ -157,7 +157,7 @@ static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
 }
 
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic,
+        uint32_t max_batch, int idle_poll_ms, const char *topic, int32_t partition,
         KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
         KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
 {
@@ -190,7 +190,7 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
                 break;
             }
             rd_kafka_resp_err_t err = produce_hook(produce_ctx, topic,
-                    RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
+                    partition, entry->data, entry->len, NULL, 0);
             if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
                 /* produce failed, entry data lost — counted by produce hook */
             }
@@ -239,28 +239,35 @@ static SCEveKafkaQueue *KafkaQueueCreate(const uint32_t capacity, const uint64_t
 }
 
 static KafkaQueuePushResult KafkaQueuePush(
-        SCEveKafkaQueue *queue, const uint8_t *data, const size_t len)
+        SCEveKafkaQueue *queue, const uint8_t *data, const size_t len, uint64_t *drop_count)
 {
+    uint64_t local_drops = 0;
     KafkaQueuePushResult result;
     SCSpinLock(&queue->lock);
     if (queue->closing) {
+        queue->dropped++;
+        local_drops++;
         result = KAFKA_QUEUE_PUSH_CLOSED;
         goto unlock;
     }
     if (len > queue->max_bytes) {
         queue->dropped++;
+        local_drops++;
         result = KAFKA_QUEUE_PUSH_DROPPED;
         goto unlock;
     }
     while (queue->count >= queue->capacity) {
         KafkaQueueDropOldestLocked(queue);
+        local_drops++;
     }
     while (queue->current_bytes + len > queue->max_bytes && queue->count > 0) {
         KafkaQueueDropOldestLocked(queue);
+        local_drops++;
     }
     uint8_t *copy = SCMalloc(len);
     if (copy == NULL) {
         queue->dropped++;
+        local_drops++;
         result = KAFKA_QUEUE_PUSH_DROPPED;
         goto unlock;
     }
@@ -273,6 +280,9 @@ static KafkaQueuePushResult KafkaQueuePush(
     queue->pushed++;
     result = KAFKA_QUEUE_PUSH_OK;
 unlock:
+    if (drop_count != NULL) {
+        *drop_count = local_drops;
+    }
     SCSpinUnlock(&queue->lock);
     return result;
 }
@@ -1090,6 +1100,7 @@ static void *KafkaProducerThread(void *arg)
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
+                ctx->setup.partition,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         if (drained == 0) {
             usleep(1000);
@@ -1107,6 +1118,7 @@ static void *KafkaProducerThread(void *arg)
     while (1) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
+                ctx->setup.partition,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         remaining += drained;
         if (drained == 0)
@@ -1284,12 +1296,15 @@ static int KafkaWrite(const char *buffer, const int buffer_len,
         return 0;
     }
 
-    KafkaQueuePushResult ret = KafkaQueuePush(td->queue, (const uint8_t *)buffer, (size_t)buffer_len);
+    uint64_t dropped = 0;
+    KafkaQueuePushResult ret = KafkaQueuePush(
+            td->queue, (const uint8_t *)buffer, (size_t)buffer_len, &dropped);
+    if (dropped > 0) {
+        SC_ATOMIC_ADD(ctx->messages_dropped_queue, dropped);
+    }
     if (ret == KAFKA_QUEUE_PUSH_OK) {
         SC_ATOMIC_ADD(ctx->messages_queued, 1);
         SC_ATOMIC_ADD(ctx->bytes_queued, (uint64_t)buffer_len);
-    } else {
-        SC_ATOMIC_ADD(ctx->messages_dropped_queue, 1);
     }
     return 0;
 }
@@ -1656,7 +1671,7 @@ static int KafkaTestQueueBasicPushPop(void)
     FAIL_IF_NULL(queue);
 
     uint8_t data[] = "hello";
-    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
     FAIL_IF(queue->count != 1);
     FAIL_IF(queue->pushed != 1);
 
@@ -1680,7 +1695,7 @@ static int KafkaTestQueueCountBudgetDropOldest(void)
     for (int i = 0; i < 6; i++) {
         uint8_t data[8];
         data[0] = (uint8_t)i;
-        FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+        FAIL_IF(KafkaQueuePush(queue, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
     }
 
     FAIL_IF(queue->count != 4);
@@ -1704,12 +1719,12 @@ static int KafkaTestQueueByteBudgetDropOldest(void)
     uint8_t payload[16];
     memset(payload, 'A', sizeof(payload));
 
-    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
-    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload), NULL) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload), NULL) != KAFKA_QUEUE_PUSH_OK);
     FAIL_IF(queue->current_bytes != 32);
     FAIL_IF(queue->count != 2);
 
-    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload), NULL) != KAFKA_QUEUE_PUSH_OK);
     FAIL_IF(queue->current_bytes > 32);
     FAIL_IF(queue->dropped != 1);
 
@@ -1724,7 +1739,7 @@ static int KafkaTestQueueOversizedDrop(void)
 
     uint8_t payload[32];
     memset(payload, 'B', sizeof(payload));
-    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload)) != KAFKA_QUEUE_PUSH_DROPPED);
+    FAIL_IF(KafkaQueuePush(queue, payload, sizeof(payload), NULL) != KAFKA_QUEUE_PUSH_DROPPED);
     FAIL_IF(queue->count != 0);
     FAIL_IF(queue->dropped != 1);
 
@@ -1738,11 +1753,11 @@ static int KafkaTestQueueClosedRejectsWrites(void)
     FAIL_IF_NULL(queue);
 
     uint8_t data[] = "test";
-    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
     FAIL_IF(queue->count != 1);
 
     KafkaQueueClose(queue);
-    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data)) != KAFKA_QUEUE_PUSH_CLOSED);
+    FAIL_IF(KafkaQueuePush(queue, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_CLOSED);
 
     SCEveKafkaQueueEntry *entry = KafkaQueuePop(queue);
     FAIL_IF_NULL(entry);
@@ -1799,9 +1814,32 @@ static int KafkaTestKafkaWriteUsesThreadQueue(void)
     PASS;
 }
 
+static int KafkaTestKafkaWriteCountsDropOldest(void)
+{
+    SCEveKafkaContext ctx = { 0 };
+    SC_ATOMIC_INIT(ctx.messages_queued);
+    SC_ATOMIC_INIT(ctx.messages_dropped_queue);
+    SC_ATOMIC_INIT(ctx.bytes_queued);
+
+    SCEveKafkaQueue *q = KafkaQueueCreate(2, 64);
+    FAIL_IF_NULL(q);
+    SCEveKafkaThreadData td = { .queue = q };
+
+    FAIL_IF(KafkaWrite("one", 3, &ctx, &td) != 0);
+    FAIL_IF(KafkaWrite("two", 3, &ctx, &td) != 0);
+    FAIL_IF(KafkaWrite("three", 5, &ctx, &td) != 0);
+
+    FAIL_IF(SC_ATOMIC_GET(ctx.messages_queued) != 3);
+    FAIL_IF(SC_ATOMIC_GET(ctx.messages_dropped_queue) != 1);
+
+    KafkaQueueDestroy(q);
+    PASS;
+}
+
 typedef struct KafkaTestDrainCtx_ {
     uint8_t *produced[16];
     size_t produced_lens[16];
+    int32_t partitions[16];
     uint32_t produced_count;
     int32_t poll_timeouts[16];
     uint32_t poll_count;
@@ -1812,7 +1850,6 @@ static rd_kafka_resp_err_t KafkaTestDrainProduceHook(void *ctx, const char *topi
 {
     KafkaTestDrainCtx *dctx = (KafkaTestDrainCtx *)ctx;
     (void)topic;
-    (void)partition;
     (void)key;
     (void)key_len;
 
@@ -1820,6 +1857,7 @@ static rd_kafka_resp_err_t KafkaTestDrainProduceHook(void *ctx, const char *topi
     if (copy) {
         memcpy(copy, data, len);
     }
+    dctx->partitions[dctx->produced_count] = partition;
     dctx->produced[dctx->produced_count] = copy;
     dctx->produced_lens[dctx->produced_count] = len;
     dctx->produced_count++;
@@ -1850,13 +1888,14 @@ static int KafkaTestDrainRoundRobinFairness(void)
     uint8_t data0[] = "aaa";
     uint8_t data1[] = "bbb";
     uint8_t data2[] = "ccc";
-    FAIL_IF(KafkaQueuePush(q0, data0, sizeof(data0)) != KAFKA_QUEUE_PUSH_OK);
-    FAIL_IF(KafkaQueuePush(q0, data1, sizeof(data1)) != KAFKA_QUEUE_PUSH_OK);
-    FAIL_IF(KafkaQueuePush(q1, data2, sizeof(data2)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q0, data0, sizeof(data0), NULL) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q0, data1, sizeof(data1), NULL) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q1, data2, sizeof(data2), NULL) != KAFKA_QUEUE_PUSH_OK);
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10, "test-topic",
-            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
+            RD_KAFKA_PARTITION_UA, KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook,
+            &dctx);
 
     FAIL_IF(drained != 2);
     FAIL_IF(dctx.produced_count != 2);
@@ -1886,13 +1925,39 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17, "test-topic",
-            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
+            RD_KAFKA_PARTITION_UA, KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook,
+            &dctx);
 
     FAIL_IF(drained != 0);
     FAIL_IF(dctx.produced_count != 0);
     FAIL_IF(dctx.poll_count != 1);
     FAIL_IF(dctx.poll_timeouts[0] != 17);
 
+    KafkaQueueRegistryDestroy(registry);
+    PASS;
+}
+
+static int KafkaTestDrainUsesConfiguredPartition(void)
+{
+    SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
+    FAIL_IF_NULL(registry);
+
+    SCEveKafkaQueue *q0 = KafkaQueueCreate(4, 1024);
+    FAIL_IF_NULL(q0);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q0) != 0);
+
+    uint8_t data0[] = "msg";
+    FAIL_IF(KafkaQueuePush(q0, data0, sizeof(data0), NULL) != KAFKA_QUEUE_PUSH_OK);
+
+    KafkaTestDrainCtx dctx = { 0 };
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 10, "test-topic", 2,
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
+
+    FAIL_IF(drained != 1);
+    FAIL_IF(dctx.produced_count != 1);
+    FAIL_IF(dctx.partitions[0] != 2);
+
+    SCFree(dctx.produced[0]);
     KafkaQueueRegistryDestroy(registry);
     PASS;
 }
@@ -2005,8 +2070,10 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestQueueRegistryRegistersMultipleQueues",
             KafkaTestQueueRegistryRegistersMultipleQueues);
     UtRegisterTest("KafkaTestKafkaWriteUsesThreadQueue", KafkaTestKafkaWriteUsesThreadQueue);
+    UtRegisterTest("KafkaTestKafkaWriteCountsDropOldest", KafkaTestKafkaWriteCountsDropOldest);
     UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);
     UtRegisterTest("KafkaTestDrainIdlePollsWithTimeout", KafkaTestDrainIdlePollsWithTimeout);
+    UtRegisterTest("KafkaTestDrainUsesConfiguredPartition", KafkaTestDrainUsesConfiguredPartition);
     UtRegisterTest("KafkaTestTopicCreateAutoCreateDisabled", KafkaTestTopicCreateAutoCreateDisabled);
     UtRegisterTest("KafkaTestTopicCreateAutoCreateEnabled", KafkaTestTopicCreateAutoCreateEnabled);
 #endif
