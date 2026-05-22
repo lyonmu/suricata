@@ -82,7 +82,7 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
 static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
         uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
-        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx, bool final_drain);
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
@@ -175,10 +175,8 @@ static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
 
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
         uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
-        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx, bool final_drain)
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
 {
-    (void)final_drain;
-
     uint32_t total_drained = 0;
     bool did_work = false;
 
@@ -1148,7 +1146,7 @@ static void *KafkaProducerThread(void *arg)
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
-                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx, false);
+                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         if (drained == 0) {
             usleep(1000);
         }
@@ -1165,7 +1163,7 @@ static void *KafkaProducerThread(void *arg)
     while (1) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
-                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx, true);
+                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         remaining += drained;
         if (drained == 0)
             break;
@@ -1305,9 +1303,6 @@ static void KafkaDeinit(void *init_data)
 
     /* Wait for producer thread to finish */
     pthread_join(ctx->producer_thread, NULL);
-
-    /* Destroy queue */
-    KafkaQueueDestroy(ctx->queue);
 
     /* Flush librdkafka queue */
     rd_kafka_flush(ctx->rk, 10000);
