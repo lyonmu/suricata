@@ -34,6 +34,9 @@
 /* Default values for configuration */
 #define KAFKA_RING_BUFFER_SIZE_DEFAULT    65536    /* Ring buffer capacity (configurable) */
 #define KAFKA_RING_BUFFER_MAX_BYTES       67108864 /* Ring buffer max bytes (64MB) */
+#define KAFKA_TOPIC_PARTITIONS_DEFAULT    1
+#define KAFKA_MAX_DRAIN_BATCH_DEFAULT     256
+#define KAFKA_IDLE_POLL_MS_DEFAULT        10
 
 /* librdkafka internal queue and performance settings */
 #define KAFKA_QUEUE_BUFFERING_MAX_MSGS    100000   /* Max messages in queue */
@@ -81,9 +84,13 @@ typedef struct KafkaSetup_ {
     /* Performance settings */
     KafkaCompressionType compression; /* Compression codec */
     KafkaAcksMode acks;              /* Acknowledgment mode */
-    int partition;                   /* Topic partition count for auto-creation (-1=1, 0=1, N=N partitions) */
-    int ring_buffer_size;            /* Local ring buffer capacity */
-    int ring_buffer_max_bytes;       /* Max bytes buffered in memory */
+    int partition;
+    bool topic_auto_create;
+    int topic_partitions;
+    int ring_buffer_size;
+    uint64_t ring_buffer_max_bytes;
+    int max_drain_batch;
+    int idle_poll_ms;
 
     /* librdkafka internal queue settings (batching handled by librdkafka) */
     int queue_buffering_max_messages;

@@ -78,23 +78,21 @@ static int KafkaDupString(const char *src, char **dst, const char *name)
     return 0;
 }
 
-static int KafkaValidateInt(const char *name, const intmax_t value, const intmax_t min)
+static int KafkaValidateIntRange(
+        const char *name, const intmax_t value, const intmax_t min, const intmax_t max)
 {
-    if (value < min) {
-        SCLogError("Kafka: invalid value for %s: %" PRIdMAX " (must be >= %" PRIdMAX ")",
-                name, value, min);
+    if (value < min || value > max) {
+        SCLogError("Kafka: invalid value for %s: %" PRIdMAX
+                   " (must be between %" PRIdMAX " and %" PRIdMAX ")",
+                name, value, min, max);
         return -1;
     }
     return 0;
 }
 
-static int KafkaValidateIntGreaterThanZero(const char *name, const intmax_t value)
+static int KafkaValidateIntTarget(const char *name, const intmax_t value, const intmax_t min)
 {
-    if (value <= 0) {
-        SCLogError("Kafka: invalid value for %s: %" PRIdMAX " (must be > 0)", name, value);
-        return -1;
-    }
-    return 0;
+    return KafkaValidateIntRange(name, value, min, INT_MAX);
 }
 
 static bool KafkaQueueFullRetryBudget(const uint32_t retry_count)
@@ -395,9 +393,13 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
     }
 
     /* Numeric settings with defaults */
-    setup->partition = -1;  /* Automatic partitioning */
+    setup->partition = RD_KAFKA_PARTITION_UA;
+    setup->topic_auto_create = false;
+    setup->topic_partitions = KAFKA_TOPIC_PARTITIONS_DEFAULT;
     setup->ring_buffer_size = KAFKA_RING_BUFFER_SIZE_DEFAULT;
     setup->ring_buffer_max_bytes = KAFKA_RING_BUFFER_MAX_BYTES;
+    setup->max_drain_batch = KAFKA_MAX_DRAIN_BATCH_DEFAULT;
+    setup->idle_poll_ms = KAFKA_IDLE_POLL_MS_DEFAULT;
 
     /* librdkafka internal queue settings with defaults */
     setup->queue_buffering_max_messages = KAFKA_QUEUE_BUFFERING_MAX_MSGS;
@@ -423,80 +425,102 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
 
     /* Parse optional overrides */
     intmax_t intval;
+    int boolval = 0;
+    if (SCConfGetChildValueBool(conf, "topic-auto-create", &boolval) == 1) {
+        setup->topic_auto_create = boolval != 0;
+    }
     if (SCConfGetChildValueInt(conf, "partition", &intval)) {
-        if (KafkaValidateInt("partition", intval, -1) != 0) {
+        if (KafkaValidateIntTarget("partition", intval, RD_KAFKA_PARTITION_UA) != 0) {
             goto error;
         }
         setup->partition = (int)intval;
     }
+    if (SCConfGetChildValueInt(conf, "topic-partitions", &intval)) {
+        if (KafkaValidateIntTarget("topic-partitions", intval, 1) != 0) {
+            goto error;
+        }
+        setup->topic_partitions = (int)intval;
+    }
     if (SCConfGetChildValueInt(conf, "ring-buffer-size", &intval)) {
-        if (KafkaValidateInt("ring-buffer-size", intval, 2) != 0) {
+        if (KafkaValidateIntTarget("ring-buffer-size", intval, 2) != 0) {
             goto error;
         }
         setup->ring_buffer_size = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "ring-buffer-max-bytes", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("ring-buffer-max-bytes", intval) != 0) {
+        if (KafkaValidateIntTarget("ring-buffer-max-bytes", intval, 1) != 0) {
             goto error;
         }
-        setup->ring_buffer_max_bytes = (int)intval;
+        setup->ring_buffer_max_bytes = (uint64_t)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "max-drain-batch", &intval)) {
+        if (KafkaValidateIntTarget("max-drain-batch", intval, 1) != 0) {
+            goto error;
+        }
+        setup->max_drain_batch = (int)intval;
+    }
+    if (SCConfGetChildValueInt(conf, "idle-poll-ms", &intval)) {
+        if (KafkaValidateIntTarget("idle-poll-ms", intval, 1) != 0) {
+            goto error;
+        }
+        setup->idle_poll_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "queue-buffering-max-messages", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("queue-buffering-max-messages", intval) != 0) {
+        if (KafkaValidateIntTarget("queue-buffering-max-messages", intval, 1) != 0) {
             goto error;
         }
         setup->queue_buffering_max_messages = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "queue-buffering-max-kbytes", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("queue-buffering-max-kbytes", intval) != 0) {
+        if (KafkaValidateIntTarget("queue-buffering-max-kbytes", intval, 1) != 0) {
             goto error;
         }
         setup->queue_buffering_max_kbytes = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "message-timeout-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("message-timeout-ms", intval) != 0) {
+        if (KafkaValidateIntTarget("message-timeout-ms", intval, 1) != 0) {
             goto error;
         }
         setup->message_timeout_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "socket-timeout-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("socket-timeout-ms", intval) != 0) {
+        if (KafkaValidateIntTarget("socket-timeout-ms", intval, 1) != 0) {
             goto error;
         }
         setup->socket_timeout_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "metadata-max-age-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("metadata-max-age-ms", intval) != 0) {
+        if (KafkaValidateIntTarget("metadata-max-age-ms", intval, 1) != 0) {
             goto error;
         }
         setup->metadata_max_age_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "retry-backoff-ms", &intval)) {
-        if (KafkaValidateInt("retry-backoff-ms", intval, 0) != 0) {
+        if (KafkaValidateIntTarget("retry-backoff-ms", intval, 0) != 0) {
             goto error;
         }
         setup->retry_backoff_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "retry-backoff-max-ms", &intval)) {
-        if (KafkaValidateInt("retry-backoff-max-ms", intval, 0) != 0) {
+        if (KafkaValidateIntTarget("retry-backoff-max-ms", intval, 0) != 0) {
             goto error;
         }
         setup->retry_backoff_max_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "reconnect-backoff-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("reconnect-backoff-ms", intval) != 0) {
+        if (KafkaValidateIntTarget("reconnect-backoff-ms", intval, 1) != 0) {
             goto error;
         }
         setup->reconnect_backoff_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "reconnect-backoff-max-ms", &intval)) {
-        if (KafkaValidateIntGreaterThanZero("reconnect-backoff-max-ms", intval) != 0) {
+        if (KafkaValidateIntTarget("reconnect-backoff-max-ms", intval, 1) != 0) {
             goto error;
         }
         setup->reconnect_backoff_max_ms = (int)intval;
     }
     if (SCConfGetChildValueInt(conf, "linger-ms", &intval)) {
-        if (KafkaValidateInt("linger-ms", intval, 0) != 0) {
+        if (KafkaValidateIntTarget("linger-ms", intval, 0) != 0) {
             goto error;
         }
         setup->linger_ms = (int)intval;
@@ -1052,7 +1076,7 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
 
     /* Initialize ring buffer */
     ctx->ring_buffer = RingBufferInit(
-            ctx->setup.ring_buffer_size, (uint64_t)ctx->setup.ring_buffer_max_bytes);
+            ctx->setup.ring_buffer_size, ctx->setup.ring_buffer_max_bytes);
     if (!ctx->ring_buffer) {
         SCLogError("Kafka: Failed to initialize ring buffer");
         goto error;
@@ -1103,7 +1127,7 @@ static int KafkaInit(const SCConfNode *conf, const bool threaded, void **init_da
 
     *init_data = ctx;
     SCLogNotice("Kafka producer initialized (brokers: %s, topic: %s, ring_buffer_size: %d, "
-                "ring_buffer_max_bytes: %d, queue_buffering_max_kbytes: %d, linger_ms: %dms)",
+                "ring_buffer_max_bytes: %" PRIu64 ", queue_buffering_max_kbytes: %d, linger_ms: %dms)",
             ctx->setup.brokers, ctx->setup.topic, ctx->setup.ring_buffer_size,
             ctx->setup.ring_buffer_max_bytes, ctx->setup.queue_buffering_max_kbytes,
             ctx->setup.linger_ms);
@@ -1538,6 +1562,66 @@ static int KafkaTestProduceWithRetryInternalNonQueueFullImmediateError(void)
     PASS;
 }
 
+static int KafkaTestParseConfigHighThroughputDefaults(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
+
+    FAIL_IF(setup.partition != RD_KAFKA_PARTITION_UA);
+    FAIL_IF(setup.topic_auto_create != false);
+    FAIL_IF(setup.topic_partitions != 1);
+    FAIL_IF(setup.max_drain_batch != 256);
+    FAIL_IF(setup.idle_poll_ms != 10);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigTopicAutoCreateEnabled(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.topic-auto-create", "yes"));
+    FAIL_IF_NOT(SCConfSet("kafka.topic-partitions", "12"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) != 0);
+    FAIL_IF(setup.topic_auto_create != true);
+    FAIL_IF(setup.topic_partitions != 12);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigInvalidIntOverflow(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.max-drain-batch", "2147483648"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
+static int KafkaTestParseConfigInvalidTopicPartitions(void)
+{
+    SCConfNode *node = KafkaTestCreateBaseConfig();
+    FAIL_IF_NULL(node);
+    FAIL_IF_NOT(SCConfSet("kafka.topic-partitions", "0"));
+
+    KafkaSetup setup = { 0 };
+    FAIL_IF(KafkaParseConfig(node, &setup) == 0);
+
+    KafkaTestDestroyBaseConfig(&setup);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1593,6 +1677,14 @@ void SCEveKafkaInitialize(void)
             KafkaTestProduceWithRetryInternalQueueFullThenSuccess);
     UtRegisterTest("KafkaTestProduceWithRetryInternalNonQueueFullImmediateError",
             KafkaTestProduceWithRetryInternalNonQueueFullImmediateError);
+    UtRegisterTest("KafkaTestParseConfigHighThroughputDefaults",
+            KafkaTestParseConfigHighThroughputDefaults);
+    UtRegisterTest("KafkaTestParseConfigTopicAutoCreateEnabled",
+            KafkaTestParseConfigTopicAutoCreateEnabled);
+    UtRegisterTest("KafkaTestParseConfigInvalidIntOverflow",
+            KafkaTestParseConfigInvalidIntOverflow);
+    UtRegisterTest("KafkaTestParseConfigInvalidTopicPartitions",
+            KafkaTestParseConfigInvalidTopicPartitions);
 #endif
 }
 
