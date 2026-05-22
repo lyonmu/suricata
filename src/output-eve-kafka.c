@@ -73,6 +73,17 @@ static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const c
         KafkaPollHookFunc poll_hook, uint32_t *retries_out);
 static int KafkaProduceWithRetry(SCEveKafkaContext *ctx, char *data, const size_t len,
         const bool is_final_drain);
+typedef rd_kafka_resp_err_t (*KafkaDrainProduceHookFunc)(
+        void *ctx, const char *topic, int32_t partition,
+        const uint8_t *data, size_t len, const void *key, size_t key_len);
+typedef int (*KafkaDrainPollHookFunc)(void *ctx, void *rk, int timeout_ms);
+static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
+        int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len);
+static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
+static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
+        uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx, bool final_drain);
+static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
 {
@@ -123,6 +134,93 @@ static void KafkaPollHook(void *ctx, const int timeout_ms)
 {
     SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
     rd_kafka_poll(kctx->rk, timeout_ms);
+}
+
+static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
+        int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len)
+{
+    SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
+    (void)partition;
+    (void)key;
+    (void)key_len;
+
+    /* Use COPY so drain helper retains ownership and can free after hook returns.
+     * Retries for QUEUE_FULL are handled inline. */
+    uint32_t retries = 0;
+    while (1) {
+        rd_kafka_resp_err_t ret = rd_kafka_producev(kctx->rk,
+                RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_VALUE((void *)data, len),
+                RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY), RD_KAFKA_V_END);
+        if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
+            return ret;
+        }
+        if (KafkaShouldRetryQueueFull(ret, retries)) {
+            retries++;
+            rd_kafka_poll(kctx->rk, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
+            continue;
+        }
+        /* Queue full beyond budget or other error — message will be dropped
+         * by the drain helper (which frees entry->data). */
+        SC_ATOMIC_ADD(kctx->messages_dropped_produce, 1);
+        return ret;
+    }
+}
+
+static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
+{
+    SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
+    (void)rk;
+    return rd_kafka_poll(kctx->rk, timeout_ms);
+}
+
+static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
+        uint32_t max_batch, int idle_poll_ms, KafkaDrainProduceHookFunc produce_hook,
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx, bool final_drain)
+{
+    (void)final_drain;
+
+    uint32_t total_drained = 0;
+    bool did_work = false;
+
+    SCMutexLock(&registry->lock);
+    uint32_t queue_count = registry->queue_count;
+    SCMutexUnlock(&registry->lock);
+
+    if (queue_count == 0) {
+        poll_hook(poll_ctx, NULL, idle_poll_ms);
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < queue_count; i++) {
+        SCMutexLock(&registry->lock);
+        uint32_t idx = registry->next_queue;
+        registry->next_queue = (idx + 1) % queue_count;
+        SCMutexUnlock(&registry->lock);
+
+        SCEveKafkaQueue *queue;
+        SCMutexLock(&registry->lock);
+        queue = registry->queues[idx];
+        SCMutexUnlock(&registry->lock);
+
+        for (uint32_t j = 0; j < max_batch; j++) {
+            SCEveKafkaQueueEntry *entry = KafkaQueuePop(queue);
+            if (entry == NULL) {
+                break;
+            }
+            rd_kafka_resp_err_t err = produce_hook(produce_ctx, "eve",
+                    RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
+            if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+                /* produce failed, entry data lost — counted by produce hook */
+            }
+            SCFree(entry->data);
+            SCFree(entry);
+            total_drained++;
+            did_work = true;
+        }
+    }
+
+    poll_hook(poll_ctx, NULL, did_work ? 0 : idle_poll_ms);
+    return total_drained;
 }
 
 static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
@@ -1032,9 +1130,9 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
  * Thread lifecycle:
  * 1. Named "SCKafkaProd" via SCSetThreadName() for debugging
  * 2. Loops until stop_flag is set or Suricata shutdown signal
- * 3. Pops messages from queue and produces to Kafka immediately
+ * 3. Round-robins across registered per-thread queues via KafkaDrainQueuesInternal
  * 4. Calls rd_kafka_poll() regularly to trigger delivery callbacks
- * 5. On exit: closes queue, drains remaining messages, flushes librdkafka queue
+ * 5. On exit: closes all queues, drains remaining messages, flushes librdkafka queue
  *
  * Note: Batching is handled by librdkafka internally via linger.ms setting.
  *       No application-level batching is needed.
@@ -1048,32 +1146,33 @@ static void *KafkaProducerThread(void *arg)
     SCLogInfo("Kafka producer thread started");
 
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
-        SCEveKafkaQueueEntry *entry = KafkaQueuePop(ctx->queue);
-
-        if (entry != NULL) {
-            KafkaProduceWithRetry(ctx, (char *)entry->data, entry->len, false);
-            SCFree(entry->data);
-            SCFree(entry);
-        } else {
-            /* No message available - sleep briefly to avoid busy-wait */
+        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
+                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
+                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx, false);
+        if (drained == 0) {
             usleep(1000);
         }
-
-        /* Poll for delivery reports - this triggers callbacks */
-        rd_kafka_poll(ctx->rk, 100);
     }
 
     SCLogInfo("Kafka producer thread: draining remaining messages...");
 
-    /* Close queue to reject new writes, then drain remaining messages */
-    KafkaQueueClose(ctx->queue);
+    /* Close all registered queues to reject new writes, then drain remaining messages */
+    KafkaQueueRegistryCloseAll(ctx->registry);
 
-    SCEveKafkaQueueEntry *entry;
-    while ((entry = KafkaQueuePop(ctx->queue)) != NULL) {
-        KafkaProduceWithRetry(ctx, (char *)entry->data, entry->len, true);
-        SCFree(entry->data);
-        SCFree(entry);
+    /* Drain remaining messages in passes until all queues are empty */
+    uint32_t remaining = 0;
+    uint32_t pass = 0;
+    while (1) {
+        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
+                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms,
+                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx, true);
+        remaining += drained;
+        if (drained == 0)
+            break;
+        pass++;
     }
+    SCLogNotice("Kafka: producer thread drained %u remaining messages in %u passes",
+            remaining, pass);
 
     /* Wait for librdkafka internal queue to drain */
     SCLogInfo("Kafka producer thread: flushing librdkafka queue...");
@@ -1736,6 +1835,110 @@ static int KafkaTestKafkaWriteUsesThreadQueue(void)
     PASS;
 }
 
+typedef struct KafkaTestDrainCtx_ {
+    uint8_t *produced[16];
+    size_t produced_lens[16];
+    uint32_t produced_count;
+    int32_t poll_timeouts[16];
+    uint32_t poll_count;
+} KafkaTestDrainCtx;
+
+static rd_kafka_resp_err_t KafkaTestDrainProduceHook(void *ctx, const char *topic,
+        int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len)
+{
+    KafkaTestDrainCtx *dctx = (KafkaTestDrainCtx *)ctx;
+    (void)topic;
+    (void)partition;
+    (void)key;
+    (void)key_len;
+
+    uint8_t *copy = SCMalloc(len);
+    if (copy) {
+        memcpy(copy, data, len);
+    }
+    dctx->produced[dctx->produced_count] = copy;
+    dctx->produced_lens[dctx->produced_count] = len;
+    dctx->produced_count++;
+    return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+
+static int KafkaTestDrainPollHook(void *ctx, void *rk, int timeout_ms)
+{
+    KafkaTestDrainCtx *dctx = (KafkaTestDrainCtx *)ctx;
+    (void)rk;
+    dctx->poll_timeouts[dctx->poll_count++] = timeout_ms;
+    return 0;
+}
+
+static int KafkaTestDrainRoundRobinFairness(void)
+{
+    SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
+    FAIL_IF_NULL(registry);
+
+    SCEveKafkaQueue *q0 = KafkaQueueCreate(8, 1024);
+    FAIL_IF_NULL(q0);
+    SCEveKafkaQueue *q1 = KafkaQueueCreate(8, 1024);
+    FAIL_IF_NULL(q1);
+
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q0) != 0);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q1) != 0);
+
+    uint8_t data0[] = "aaa";
+    uint8_t data1[] = "bbb";
+    uint8_t data2[] = "ccc";
+    FAIL_IF(KafkaQueuePush(q0, data0, sizeof(data0)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q0, data1, sizeof(data1)) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q1, data2, sizeof(data2)) != KAFKA_QUEUE_PUSH_OK);
+
+    KafkaTestDrainCtx dctx = { 0 };
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10,
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx, false);
+
+    FAIL_IF(drained != 2);
+    FAIL_IF(dctx.produced_count != 2);
+    FAIL_IF(dctx.poll_count != 1);
+    FAIL_IF(dctx.poll_timeouts[0] != 0);
+
+    /* q0 had 2 entries, drained 1 (max_batch=1); q1 had 1, drained 1 */
+    FAIL_IF(q0->count != 1);
+    FAIL_IF(q1->count != 0);
+
+    /* First drain should produce from q0 (index 0), second from q1 (index 1) */
+    FAIL_IF(dctx.produced_lens[0] != sizeof(data0));
+    FAIL_IF(memcmp(dctx.produced[0], data0, sizeof(data0)) != 0);
+    FAIL_IF(dctx.produced_lens[1] != sizeof(data2));
+    FAIL_IF(memcmp(dctx.produced[1], data2, sizeof(data2)) != 0);
+
+    SCFree(dctx.produced[0]);
+    SCFree(dctx.produced[1]);
+    KafkaQueueDestroy(q0);
+    KafkaQueueDestroy(q1);
+    SCFree(registry->queues);
+    SCMutexDestroy(&registry->lock);
+    SCFree(registry);
+    PASS;
+}
+
+static int KafkaTestDrainIdlePollsWithTimeout(void)
+{
+    SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
+    FAIL_IF_NULL(registry);
+
+    KafkaTestDrainCtx dctx = { 0 };
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17,
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx, false);
+
+    FAIL_IF(drained != 0);
+    FAIL_IF(dctx.produced_count != 0);
+    FAIL_IF(dctx.poll_count != 1);
+    FAIL_IF(dctx.poll_timeouts[0] != 17);
+
+    SCFree(registry->queues);
+    SCMutexDestroy(&registry->lock);
+    SCFree(registry);
+    PASS;
+}
+
 #endif /* UNITTESTS */
 
 /**
@@ -1801,6 +2004,8 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestQueueRegistryRegistersMultipleQueues",
             KafkaTestQueueRegistryRegistersMultipleQueues);
     UtRegisterTest("KafkaTestKafkaWriteUsesThreadQueue", KafkaTestKafkaWriteUsesThreadQueue);
+    UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);
+    UtRegisterTest("KafkaTestDrainIdlePollsWithTimeout", KafkaTestDrainIdlePollsWithTimeout);
 #endif
 }
 
