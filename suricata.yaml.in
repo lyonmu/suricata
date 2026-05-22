@@ -133,10 +133,14 @@ outputs:
       #kafka:
       #  # Required settings
       #  brokers: localhost:9092          # Comma-separated broker list
-      #  topic: suricata                  # Target topic (should be pre-created)
+      #  topic: suricata                  # Target topic (auto-created if topic-auto-create enabled)
       #
       #  # Optional identification
       #  client-id: suricata              # Client ID (default: suricata)
+      #
+      #  # Topic settings
+      #  topic-auto-create: no            # Enable automatic topic creation (default: no)
+      #  topic-partitions: 1              # Partitions for auto-created topics (default: 1)
       #
       #  # Performance settings
       #  compression: none                # none|gzip|snappy|lz4|zstd (default: none)
@@ -144,9 +148,11 @@ outputs:
       #                                   #   0 = fire and forget (fastest, no durability)
       #                                   #   1 = leader ack (balanced)
       #                                   #   all = all replicas (slowest, most durable)
-      #  partition: -1                    # -1 for automatic partitioning
-      #  ring-buffer-size: 65536          # Local ring buffer capacity (default: 65536)
-      #  ring-buffer-max-bytes: 67108864  # Max local ring buffer memory (default: 64MB)
+      #  partition: -1                    # Target partition, -1 for auto-assign (default: -1)
+      #  ring-buffer-size: 65536          # Max messages in per-thread queue (default: 65536)
+      #  ring-buffer-max-bytes: 67108864  # Max bytes in per-thread queue (default: 64MB)
+      #  max-drain-batch: 256             # Max messages drained per poll cycle (default: 256)
+      #  idle-poll-ms: 10                 # Poll timeout when no messages to drain (default: 10)
       #
       #  # librdkafka internal queue settings (usually don't need to change)
       #  # Batching is handled by librdkafka internally via linger.ms
