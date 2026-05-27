@@ -39,17 +39,16 @@
 #define KAFKA_IDLE_POLL_MS_DEFAULT        10
 
 /* librdkafka internal queue and performance settings */
-#define KAFKA_QUEUE_BUFFERING_MAX_MSGS    100000   /* Max messages in queue */
-#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES  131072   /* Max queue size in KB (128MB) */
-#define KAFKA_MESSAGE_TIMEOUT_MS          300000   /* Message timeout (5 min) */
-#define KAFKA_SOCKET_TIMEOUT_MS           30000    /* Socket timeout (30 sec) */
-#define KAFKA_METADATA_MAX_AGE_MS         300000   /* Metadata refresh interval (5 min) */
-#define KAFKA_RETRY_BACKOFF_MS            100      /* Retry backoff interval */
-#define KAFKA_RETRY_BACKOFF_MAX_MS        1000     /* Retry backoff max interval */
-#define KAFKA_RECONNECT_BACKOFF_MS        100      /* Reconnect backoff interval */
-#define KAFKA_RECONNECT_BACKOFF_MAX_MS    10000    /* Reconnect backoff max interval */
-/* Linger.ms is handled by librdkafka internally, no application batching needed */
-#define KAFKA_LINGER_MS                   5        /* Producer linger time (librdkafka handles batching) */
+#define KAFKA_QUEUE_BUFFERING_MAX_MSGS    100000
+#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES  131072
+#define KAFKA_MESSAGE_TIMEOUT_MS          300000
+#define KAFKA_SOCKET_TIMEOUT_MS           30000
+#define KAFKA_METADATA_MAX_AGE_MS         300000
+#define KAFKA_RETRY_BACKOFF_MS            100
+#define KAFKA_RETRY_BACKOFF_MAX_MS        1000
+#define KAFKA_RECONNECT_BACKOFF_MS        100
+#define KAFKA_RECONNECT_BACKOFF_MAX_MS    10000
+#define KAFKA_LINGER_MS                   5
 
 /* Compression types */
 typedef enum {
@@ -84,25 +83,12 @@ typedef struct KafkaSetup_ {
     /* Performance settings */
     KafkaCompressionType compression; /* Compression codec */
     KafkaAcksMode acks;              /* Acknowledgment mode */
-    int partition;
     bool topic_auto_create;
     int topic_partitions;
     int ring_buffer_size;
     uint64_t ring_buffer_max_bytes;
     int max_drain_batch;
     int idle_poll_ms;
-
-    /* librdkafka internal queue settings (batching handled by librdkafka) */
-    int queue_buffering_max_messages;
-    int queue_buffering_max_kbytes;
-    int message_timeout_ms;
-    int socket_timeout_ms;
-    int metadata_max_age_ms;
-    int retry_backoff_ms;
-    int retry_backoff_max_ms;
-    int reconnect_backoff_ms;
-    int reconnect_backoff_max_ms;
-    int linger_ms;                   /* librdkafka internal batching */
 
     /* Security settings */
     KafkaSecurityProtocol security_protocol;
