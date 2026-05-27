@@ -32,21 +32,19 @@ Treat packet and file inputs as untrusted. Changes affecting decode, stream, app
 
 ## AI Agent Workflow
 
-Prefer fast, targeted repository search with `rg` before opening files.
+Prefer semantic code search with the `semble` MCP tools before broad grep/read operations. Use `rg` for exact symbol, path, or literal lookups.
 
 Workflow:
 
 ```text
-rg --files -> rg -> targeted read
+semble search -> rg -> targeted read
 ```
 
 Examples:
 
-```bash
-rg --files | rg 'output-eve-kafka|suricata.yaml'
-rg -n "UtRegisterTest|KafkaDrainQueuesInternal" src
-rg -n "stream reassembly" src doc/userguide
-```
+- Use `mcp__semble__search` with `repo: /root/workspace/code/mu/github/suricata` for questions such as "EVE Kafka output queue handling".
+- Use `rg --files | rg 'output-eve-kafka|suricata.yaml'` for known file names.
+- Use `rg -n "UtRegisterTest|KafkaDrainQueuesInternal" src` for exact symbols.
 
 Read the minimum required context and avoid unrelated subsystem scans.
 Prefer preserving existing subsystem architecture and coding style over introducing new abstractions.
