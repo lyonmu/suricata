@@ -874,8 +874,8 @@ static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, c
 /**
  * \brief Create topic with specified partition count
  *
- * Uses the 'partition' config value to create topic with that many partitions.
- * If partition is -1 (auto) or 0, creates topic with 1 partition.
+ * Uses the configured topic-partitions value as the requested partition count.
+ * If partition_count is <= 0, creates topic with 1 partition.
  * Other topic settings use Kafka broker defaults.
  */
 static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partition_count, int timeout_ms)
@@ -889,7 +889,7 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
     char errstr[512];
     int ret = 0;
 
-    /* If partition is -1 (auto) or <= 0, use 1 partition */
+    /* If partition_count is <= 0, use 1 partition. */
     if (partition_count <= 0) {
         partition_count = 1;
     }
