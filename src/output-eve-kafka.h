@@ -32,23 +32,23 @@
 #define SURICATA_OUTPUT_EVE_KAFKA_H
 
 /* Default values for configuration */
-#define KAFKA_RING_BUFFER_SIZE_DEFAULT    65536    /* Ring buffer capacity (configurable) */
-#define KAFKA_RING_BUFFER_MAX_BYTES       67108864 /* Ring buffer max bytes (64MB) */
-#define KAFKA_TOPIC_PARTITIONS_DEFAULT    3
-#define KAFKA_MAX_DRAIN_BATCH_DEFAULT     256
-#define KAFKA_IDLE_POLL_MS_DEFAULT        10
+#define KAFKA_RING_BUFFER_SIZE_DEFAULT 65536    /* Ring buffer capacity (configurable) */
+#define KAFKA_RING_BUFFER_MAX_BYTES    67108864 /* Ring buffer max bytes (64MB) */
+#define KAFKA_TOPIC_PARTITIONS_DEFAULT 3
+#define KAFKA_MAX_DRAIN_BATCH_DEFAULT  256
+#define KAFKA_IDLE_POLL_MS_DEFAULT     10
 
 /* librdkafka internal queue and performance settings */
-#define KAFKA_QUEUE_BUFFERING_MAX_MSGS    100000
-#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES  131072
-#define KAFKA_MESSAGE_TIMEOUT_MS          300000
-#define KAFKA_SOCKET_TIMEOUT_MS           30000
-#define KAFKA_METADATA_MAX_AGE_MS         300000
-#define KAFKA_RETRY_BACKOFF_MS            100
-#define KAFKA_RETRY_BACKOFF_MAX_MS        1000
-#define KAFKA_RECONNECT_BACKOFF_MS        100
-#define KAFKA_RECONNECT_BACKOFF_MAX_MS    10000
-#define KAFKA_LINGER_MS                   5
+#define KAFKA_QUEUE_BUFFERING_MAX_MSGS   100000
+#define KAFKA_QUEUE_BUFFERING_MAX_KBYTES 131072
+#define KAFKA_MESSAGE_TIMEOUT_MS         300000
+#define KAFKA_SOCKET_TIMEOUT_MS          30000
+#define KAFKA_METADATA_MAX_AGE_MS        300000
+#define KAFKA_RETRY_BACKOFF_MS           100
+#define KAFKA_RETRY_BACKOFF_MAX_MS       1000
+#define KAFKA_RECONNECT_BACKOFF_MS       100
+#define KAFKA_RECONNECT_BACKOFF_MAX_MS   10000
+#define KAFKA_LINGER_MS                  5
 
 /* Compression types */
 typedef enum {
@@ -69,20 +69,20 @@ typedef enum {
 
 /* Acknowledgment modes */
 typedef enum {
-    KAFKA_ACKS_ZERO = 0,    /* Fire and forget */
-    KAFKA_ACKS_ONE,         /* Leader acknowledgment */
-    KAFKA_ACKS_ALL,         /* All replicas acknowledgment */
+    KAFKA_ACKS_ZERO = 0, /* Fire and forget */
+    KAFKA_ACKS_ONE,      /* Leader acknowledgment */
+    KAFKA_ACKS_ALL,      /* All replicas acknowledgment */
 } KafkaAcksMode;
 
 typedef struct KafkaSetup_ {
     /* Required settings */
-    char *brokers;                   /* Comma-separated broker list */
-    char *topic;                     /* Target Kafka topic */
-    char *client_id;                 /* Client identifier */
+    char *brokers;   /* Comma-separated broker list */
+    char *topic;     /* Target Kafka topic */
+    char *client_id; /* Client identifier */
 
     /* Performance settings */
     KafkaCompressionType compression; /* Compression codec */
-    KafkaAcksMode acks;              /* Acknowledgment mode */
+    KafkaAcksMode acks;               /* Acknowledgment mode */
     bool topic_auto_create;
     int topic_partitions;
     int ring_buffer_size;
@@ -143,9 +143,9 @@ typedef struct SCEveKafkaThreadData_ {
 #include <librdkafka/rdkafka.h>
 
 typedef struct SCEveKafkaContext_ {
-    rd_kafka_t *rk;                  /* Kafka producer handle */
-    KafkaSetup setup;                /* Configuration (owned by this struct) */
-    pthread_t producer_thread;       /* Background producer thread */
+    rd_kafka_t *rk;                    /* Kafka producer handle */
+    KafkaSetup setup;                  /* Configuration (owned by this struct) */
+    pthread_t producer_thread;         /* Background producer thread */
     SC_ATOMIC_DECLARE(int, stop_flag); /* Thread stop signal (set to 1 to stop) */
     SCEveKafkaQueueRegistry *registry; /* Registry of per-thread queues */
 

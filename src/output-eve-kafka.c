@@ -53,32 +53,31 @@
 #error "Kafka EVE output requires librdkafka >= 2.3.0"
 #endif
 
-#define OUTPUT_NAME "kafka"
-#define KAFKA_QUEUE_FULL_RETRY_MAX 3
+#define OUTPUT_NAME                    "kafka"
+#define KAFKA_QUEUE_FULL_RETRY_MAX     3
 #define KAFKA_QUEUE_FULL_RETRY_POLL_MS 10
 
 /* Forward declarations */
 static void *KafkaProducerThread(void *arg);
-static void KafkaDeliveryReportCallback(rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque);
+static void KafkaDeliveryReportCallback(
+        rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque);
 static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, const char *buf);
 static void KafkaFreeConfig(KafkaSetup *setup);
 static bool KafkaQueueFullRetryBudget(const uint32_t retry_count);
 static inline bool KafkaShouldRetryQueueFull(
         const rd_kafka_resp_err_t ret, const uint32_t retry_count);
 typedef int (*KafkaCreateTopicHookFunc)(void *ctx, const char *topic, int32_t partition_count);
-static int KafkaMaybeCreateTopic(const KafkaSetup *setup, const char *topic,
-        KafkaCreateTopicHookFunc hook, void *hook_ctx);
-typedef rd_kafka_resp_err_t (*KafkaDrainProduceHookFunc)(
-        void *ctx, const char *topic, int32_t partition,
-        const uint8_t *data, size_t len, const void *key, size_t key_len);
-typedef int (*KafkaDrainPollHookFunc)(void *ctx, void *rk, int timeout_ms);
-static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
+static int KafkaMaybeCreateTopic(
+        const KafkaSetup *setup, const char *topic, KafkaCreateTopicHookFunc hook, void *hook_ctx);
+typedef rd_kafka_resp_err_t (*KafkaDrainProduceHookFunc)(void *ctx, const char *topic,
         int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len);
+typedef int (*KafkaDrainPollHookFunc)(void *ctx, void *rk, int timeout_ms);
+static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic, int32_t partition,
+        const uint8_t *data, size_t len, const void *key, size_t key_len);
 static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
-static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic,
-        KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
-        KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
+static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry, uint32_t max_batch,
+        int idle_poll_ms, const char *topic, KafkaDrainProduceHookFunc produce_hook,
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
@@ -95,8 +94,8 @@ static int KafkaValidateIntRange(
         const char *name, const intmax_t value, const intmax_t min, const intmax_t max)
 {
     if (value < min || value > max) {
-        SCLogError("Kafka: invalid value for %s: %" PRIdMAX
-                   " (must be between %" PRIdMAX " and %" PRIdMAX ")",
+        SCLogError("Kafka: invalid value for %s: %" PRIdMAX " (must be between %" PRIdMAX
+                   " and %" PRIdMAX ")",
                 name, value, min, max);
         return -1;
     }
@@ -119,8 +118,8 @@ static inline bool KafkaShouldRetryQueueFull(
     return ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retry_count);
 }
 
-static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
-        int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len)
+static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic, int32_t partition,
+        const uint8_t *data, size_t len, const void *key, size_t key_len)
 {
     SCEveKafkaContext *kctx = (SCEveKafkaContext *)ctx;
     (void)key;
@@ -135,10 +134,9 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
 
     uint32_t retries = 0;
     while (1) {
-        rd_kafka_resp_err_t ret = rd_kafka_producev(kctx->rk,
-                RD_KAFKA_V_TOPIC(topic), RD_KAFKA_V_PARTITION(partition),
-                RD_KAFKA_V_VALUE((void *)data, len), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
-                RD_KAFKA_V_END);
+        rd_kafka_resp_err_t ret = rd_kafka_producev(kctx->rk, RD_KAFKA_V_TOPIC(topic),
+                RD_KAFKA_V_PARTITION(partition), RD_KAFKA_V_VALUE((void *)data, len),
+                RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY), RD_KAFKA_V_END);
         if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
             return ret;
         }
@@ -161,10 +159,9 @@ static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
     return rd_kafka_poll(kctx->rk, timeout_ms);
 }
 
-static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic,
-        KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
-        KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
+static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry, uint32_t max_batch,
+        int idle_poll_ms, const char *topic, KafkaDrainProduceHookFunc produce_hook,
+        void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
 {
     uint32_t total_drained = 0;
     bool did_work = false;
@@ -194,8 +191,8 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
             if (entry == NULL) {
                 break;
             }
-            rd_kafka_resp_err_t err = produce_hook(produce_ctx, topic,
-                    RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
+            rd_kafka_resp_err_t err = produce_hook(
+                    produce_ctx, topic, RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
             if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
                 /* produce failed, entry data lost — counted by produce hook */
             }
@@ -209,7 +206,6 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
     poll_hook(poll_ctx, NULL, did_work ? 0 : idle_poll_ms);
     return total_drained;
 }
-
 
 static void KafkaQueueDropOldestLocked(SCEveKafkaQueue *queue)
 {
@@ -548,9 +544,8 @@ static int KafkaParseConfig(const SCConfNode *conf, KafkaSetup *setup)
     }
 
     val = SCConfNodeLookupChildValue(conf, "ssl-certificate-location");
-    if (val != NULL &&
-            KafkaDupString(val, &setup->ssl_certificate_location, "ssl-certificate-location") !=
-                    0) {
+    if (val != NULL && KafkaDupString(val, &setup->ssl_certificate_location,
+                               "ssl-certificate-location") != 0) {
         goto error;
     }
 
@@ -593,16 +588,26 @@ error:
  */
 static void KafkaFreeConfig(KafkaSetup *setup)
 {
-    if (setup->brokers) SCFree(setup->brokers);
-    if (setup->topic) SCFree(setup->topic);
-    if (setup->client_id) SCFree(setup->client_id);
-    if (setup->ssl_ca_location) SCFree(setup->ssl_ca_location);
-    if (setup->ssl_certificate_location) SCFree(setup->ssl_certificate_location);
-    if (setup->ssl_key_location) SCFree(setup->ssl_key_location);
-    if (setup->ssl_key_password) SCFree(setup->ssl_key_password);
-    if (setup->sasl_mechanism) SCFree(setup->sasl_mechanism);
-    if (setup->sasl_username) SCFree(setup->sasl_username);
-    if (setup->sasl_password) SCFree(setup->sasl_password);
+    if (setup->brokers)
+        SCFree(setup->brokers);
+    if (setup->topic)
+        SCFree(setup->topic);
+    if (setup->client_id)
+        SCFree(setup->client_id);
+    if (setup->ssl_ca_location)
+        SCFree(setup->ssl_ca_location);
+    if (setup->ssl_certificate_location)
+        SCFree(setup->ssl_certificate_location);
+    if (setup->ssl_key_location)
+        SCFree(setup->ssl_key_location);
+    if (setup->ssl_key_password)
+        SCFree(setup->ssl_key_password);
+    if (setup->sasl_mechanism)
+        SCFree(setup->sasl_mechanism);
+    if (setup->sasl_username)
+        SCFree(setup->sasl_username);
+    if (setup->sasl_password)
+        SCFree(setup->sasl_password);
 }
 
 /**
@@ -615,32 +620,38 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
     char buf[64];
 
     /* Basic configuration */
-    if (rd_kafka_conf_set(conf, "bootstrap.servers", setup->brokers, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "bootstrap.servers", setup->brokers, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set bootstrap.servers: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
-    if (rd_kafka_conf_set(conf, "client.id", setup->client_id, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "client.id", setup->client_id, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set client.id: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     /* Message delivery settings - acks */
-    const char *acks_str = setup->acks == KAFKA_ACKS_ZERO ? "0" :
-                           setup->acks == KAFKA_ACKS_ONE ? "1" : "all";
-    if (rd_kafka_conf_set(conf, "request.required.acks", acks_str, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    const char *acks_str = setup->acks == KAFKA_ACKS_ZERO  ? "0"
+                           : setup->acks == KAFKA_ACKS_ONE ? "1"
+                                                           : "all";
+    if (rd_kafka_conf_set(conf, "request.required.acks", acks_str, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set request.required.acks: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     /* Compression codec */
-    const char *compression_str = setup->compression == KAFKA_COMPRESSION_NONE ? "none" :
-                                  setup->compression == KAFKA_COMPRESSION_GZIP ? "gzip" :
-                                  setup->compression == KAFKA_COMPRESSION_SNAPPY ? "snappy" :
-                                  setup->compression == KAFKA_COMPRESSION_LZ4 ? "lz4" : "zstd";
-    if (rd_kafka_conf_set(conf, "compression.codec", compression_str, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    const char *compression_str = setup->compression == KAFKA_COMPRESSION_NONE     ? "none"
+                                  : setup->compression == KAFKA_COMPRESSION_GZIP   ? "gzip"
+                                  : setup->compression == KAFKA_COMPRESSION_SNAPPY ? "snappy"
+                                  : setup->compression == KAFKA_COMPRESSION_LZ4    ? "lz4"
+                                                                                   : "zstd";
+    if (rd_kafka_conf_set(conf, "compression.codec", compression_str, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set compression.codec: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
@@ -655,14 +666,16 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
     }
 
     snprintf(buf, sizeof(buf), "%d", KAFKA_QUEUE_BUFFERING_MAX_MSGS);
-    if (rd_kafka_conf_set(conf, "queue.buffering.max.messages", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "queue.buffering.max.messages", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set queue.buffering.max.messages: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     snprintf(buf, sizeof(buf), "%d", KAFKA_QUEUE_BUFFERING_MAX_KBYTES);
-    if (rd_kafka_conf_set(conf, "queue.buffering.max.kbytes", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "queue.buffering.max.kbytes", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set queue.buffering.max.kbytes: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
@@ -670,53 +683,61 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
 
     /* Retry and timeout settings */
     snprintf(buf, sizeof(buf), "%d", KAFKA_RETRY_BACKOFF_MS);
-    if (rd_kafka_conf_set(conf, "retry.backoff.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "retry.backoff.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set retry.backoff.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
     snprintf(buf, sizeof(buf), "%d", KAFKA_RETRY_BACKOFF_MAX_MS);
-    if (rd_kafka_conf_set(conf, "retry.backoff.max.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "retry.backoff.max.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set retry.backoff.max.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
     snprintf(buf, sizeof(buf), "%d", KAFKA_RECONNECT_BACKOFF_MS);
-    if (rd_kafka_conf_set(conf, "reconnect.backoff.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "reconnect.backoff.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set reconnect.backoff.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
     snprintf(buf, sizeof(buf), "%d", KAFKA_RECONNECT_BACKOFF_MAX_MS);
-    if (rd_kafka_conf_set(conf, "reconnect.backoff.max.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "reconnect.backoff.max.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set reconnect.backoff.max.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     snprintf(buf, sizeof(buf), "%d", KAFKA_MESSAGE_TIMEOUT_MS);
-    if (rd_kafka_conf_set(conf, "message.timeout.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "message.timeout.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set message.timeout.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     snprintf(buf, sizeof(buf), "%d", KAFKA_SOCKET_TIMEOUT_MS);
-    if (rd_kafka_conf_set(conf, "socket.timeout.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "socket.timeout.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set socket.timeout.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     snprintf(buf, sizeof(buf), "%d", KAFKA_METADATA_MAX_AGE_MS);
-    if (rd_kafka_conf_set(conf, "metadata.max.age.ms", buf, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "metadata.max.age.ms", buf, errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set metadata.max.age.ms: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
     }
 
     /* Enable socket keepalive */
-    if (rd_kafka_conf_set(conf, "socket.keepalive.enable", "true", errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+    if (rd_kafka_conf_set(conf, "socket.keepalive.enable", "true", errbuf, sizeof(errbuf)) !=
+            RD_KAFKA_CONF_OK) {
         SCLogError("Kafka: Failed to set socket.keepalive.enable: %s", errbuf);
         rd_kafka_conf_destroy(conf);
         return NULL;
@@ -725,34 +746,40 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
     /* Security settings */
     switch (setup->security_protocol) {
         case KAFKA_SECURITY_SSL:
-            if (rd_kafka_conf_set(conf, "security.protocol", "SSL", errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+            if (rd_kafka_conf_set(conf, "security.protocol", "SSL", errbuf, sizeof(errbuf)) !=
+                    RD_KAFKA_CONF_OK) {
                 SCLogError("Kafka: Failed to set security.protocol: %s", errbuf);
                 rd_kafka_conf_destroy(conf);
                 return NULL;
             }
             if (setup->ssl_ca_location) {
-                if (rd_kafka_conf_set(conf, "ssl.ca.location", setup->ssl_ca_location, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "ssl.ca.location", setup->ssl_ca_location, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set ssl.ca.location: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->ssl_certificate_location) {
-                if (rd_kafka_conf_set(conf, "ssl.certificate.location", setup->ssl_certificate_location, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "ssl.certificate.location",
+                            setup->ssl_certificate_location, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set ssl.certificate.location: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->ssl_key_location) {
-                if (rd_kafka_conf_set(conf, "ssl.key.location", setup->ssl_key_location, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "ssl.key.location", setup->ssl_key_location, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set ssl.key.location: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->ssl_key_password) {
-                if (rd_kafka_conf_set(conf, "ssl.key.password", setup->ssl_key_password, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "ssl.key.password", setup->ssl_key_password, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set ssl.key.password: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
@@ -760,25 +787,29 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
             }
             break;
         case KAFKA_SECURITY_SASL_PLAINTEXT:
-            if (rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT", errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+            if (rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT", errbuf,
+                        sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                 SCLogError("Kafka: Failed to set security.protocol: %s", errbuf);
                 rd_kafka_conf_destroy(conf);
                 return NULL;
             }
             if (setup->sasl_mechanism) {
-                if (rd_kafka_conf_set(conf, "sasl.mechanism", setup->sasl_mechanism, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.mechanism", setup->sasl_mechanism, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.mechanism: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->sasl_username && setup->sasl_password) {
-                if (rd_kafka_conf_set(conf, "sasl.username", setup->sasl_username, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.username", setup->sasl_username, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.username: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
-                if (rd_kafka_conf_set(conf, "sasl.password", setup->sasl_password, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.password", setup->sasl_password, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.password: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
@@ -786,32 +817,37 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
             }
             break;
         case KAFKA_SECURITY_SASL_SSL:
-            if (rd_kafka_conf_set(conf, "security.protocol", "SASL_SSL", errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+            if (rd_kafka_conf_set(conf, "security.protocol", "SASL_SSL", errbuf, sizeof(errbuf)) !=
+                    RD_KAFKA_CONF_OK) {
                 SCLogError("Kafka: Failed to set security.protocol: %s", errbuf);
                 rd_kafka_conf_destroy(conf);
                 return NULL;
             }
             if (setup->sasl_mechanism) {
-                if (rd_kafka_conf_set(conf, "sasl.mechanism", setup->sasl_mechanism, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.mechanism", setup->sasl_mechanism, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.mechanism: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->sasl_username && setup->sasl_password) {
-                if (rd_kafka_conf_set(conf, "sasl.username", setup->sasl_username, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.username", setup->sasl_username, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.username: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
-                if (rd_kafka_conf_set(conf, "sasl.password", setup->sasl_password, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "sasl.password", setup->sasl_password, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set sasl.password: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
                 }
             }
             if (setup->ssl_ca_location) {
-                if (rd_kafka_conf_set(conf, "ssl.ca.location", setup->ssl_ca_location, errbuf, sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
+                if (rd_kafka_conf_set(conf, "ssl.ca.location", setup->ssl_ca_location, errbuf,
+                            sizeof(errbuf)) != RD_KAFKA_CONF_OK) {
                     SCLogError("Kafka: Failed to set ssl.ca.location: %s", errbuf);
                     rd_kafka_conf_destroy(conf);
                     return NULL;
@@ -832,10 +868,12 @@ static rd_kafka_conf_t *KafkaCreateRdKafkaConf(KafkaSetup *setup)
 /**
  * \brief Delivery report callback
  */
-static void KafkaDeliveryReportCallback(rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque)
+static void KafkaDeliveryReportCallback(
+        rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque)
 {
     SCEveKafkaContext *ctx = (SCEveKafkaContext *)opaque;
-    if (ctx == NULL) return;
+    if (ctx == NULL)
+        return;
 
     SC_ATOMIC_ADD(ctx->delivery_callback_count, 1);
 
@@ -883,7 +921,8 @@ static void KafkaLogCallback(const rd_kafka_t *rk, int level, const char *fac, c
  * If partition_count is <= 0, creates topic with 1 partition.
  * Other topic settings use Kafka broker defaults.
  */
-static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partition_count, int timeout_ms)
+static int KafkaCreateTopic(
+        rd_kafka_t *rk, const char *topic_name, int partition_count, int timeout_ms)
 {
     rd_kafka_NewTopic_t *new_topic;
     rd_kafka_queue_t *queue;
@@ -899,13 +938,13 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
         partition_count = 1;
     }
 
-    SCLogInfo("Kafka: Creating topic '%s' with %d partitions (using broker defaults for other settings)",
-              topic_name, partition_count);
+    SCLogInfo("Kafka: Creating topic '%s' with %d partitions (using broker defaults for other "
+              "settings)",
+            topic_name, partition_count);
 
     /* Create topic specification */
     /* Use -1 for replication_factor to let broker use default. */
-    new_topic = rd_kafka_NewTopic_new(topic_name, partition_count, -1,
-                                      errstr, sizeof(errstr));
+    new_topic = rd_kafka_NewTopic_new(topic_name, partition_count, -1, errstr, sizeof(errstr));
     if (new_topic == NULL) {
         SCLogError("Kafka: Failed to create NewTopic object: %s", errstr);
         return -1;
@@ -951,13 +990,13 @@ static int KafkaCreateTopic(rd_kafka_t *rk, const char *topic_name, int partitio
             if (err == RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS) {
                 SCLogNotice("Kafka: Topic '%s' already exists", topic_name);
             } else {
-                SCLogNotice("Kafka: Topic '%s' created successfully with %d partitions",
-                          topic_name, partition_count);
+                SCLogNotice("Kafka: Topic '%s' created successfully with %d partitions", topic_name,
+                        partition_count);
             }
             ret = 0;
         } else {
-            SCLogError("Kafka: Failed to create topic '%s': %s",
-                      topic_name, rd_kafka_topic_result_error_string(topic_results[0]));
+            SCLogError("Kafka: Failed to create topic '%s': %s", topic_name,
+                    rd_kafka_topic_result_error_string(topic_results[0]));
             ret = -1;
         }
     } else {
@@ -978,8 +1017,8 @@ static int KafkaCreateTopicHook(void *ctx, const char *topic, int32_t partition_
     return KafkaCreateTopic(kctx->rk, topic, partition_count, 10000);
 }
 
-static int KafkaMaybeCreateTopic(const KafkaSetup *setup, const char *topic,
-        KafkaCreateTopicHookFunc hook, void *hook_ctx)
+static int KafkaMaybeCreateTopic(
+        const KafkaSetup *setup, const char *topic, KafkaCreateTopicHookFunc hook, void *hook_ctx)
 {
     if (!setup->topic_auto_create) {
         SCLogNotice("Kafka: topic auto-create disabled, skipping topic creation for %s", topic);
@@ -1011,9 +1050,9 @@ static void *KafkaProducerThread(void *arg)
     SCLogInfo("Kafka producer thread started");
 
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
-        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
-                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
-                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
+        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry, ctx->setup.max_drain_batch,
+                ctx->setup.idle_poll_ms, ctx->setup.topic, KafkaDrainProduceHook, ctx,
+                KafkaDrainPollHook, ctx);
         if (drained == 0) {
             usleep(1000);
         }
@@ -1028,20 +1067,20 @@ static void *KafkaProducerThread(void *arg)
     uint32_t remaining = 0;
     uint32_t pass = 0;
     while (1) {
-        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
-                ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
-                KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
+        uint32_t drained = KafkaDrainQueuesInternal(ctx->registry, ctx->setup.max_drain_batch,
+                ctx->setup.idle_poll_ms, ctx->setup.topic, KafkaDrainProduceHook, ctx,
+                KafkaDrainPollHook, ctx);
         remaining += drained;
         if (drained == 0)
             break;
         pass++;
     }
-    SCLogNotice("Kafka: producer thread drained %u remaining messages in %u passes",
-            remaining, pass);
+    SCLogNotice(
+            "Kafka: producer thread drained %u remaining messages in %u passes", remaining, pass);
 
     /* Wait for librdkafka internal queue to drain */
     SCLogInfo("Kafka producer thread: flushing librdkafka queue...");
-    rd_kafka_flush(ctx->rk, 10000);  /* 10 second timeout */
+    rd_kafka_flush(ctx->rk, 10000); /* 10 second timeout */
 
     SCLogInfo("Kafka producer thread: exiting");
     return NULL;
@@ -1145,7 +1184,8 @@ error:
     if (ctx->registry) {
         KafkaQueueRegistryDestroy(ctx->registry);
     }
-    if (ctx->rk) rd_kafka_destroy(ctx->rk);
+    if (ctx->rk)
+        rd_kafka_destroy(ctx->rk);
     KafkaFreeConfig(&ctx->setup);
     SCFree(ctx);
     return -1;
@@ -1157,7 +1197,8 @@ error:
 static void KafkaDeinit(void *init_data)
 {
     SCEveKafkaContext *ctx = (SCEveKafkaContext *)init_data;
-    if (ctx == NULL) return;
+    if (ctx == NULL)
+        return;
 
     SCLogInfo("Kafka: Initiating shutdown...");
 
@@ -1185,9 +1226,8 @@ static void KafkaDeinit(void *init_data)
     uint64_t dropped_total = dropped_queue + dropped_produce;
     uint64_t bytes = SC_ATOMIC_GET(ctx->bytes_sent);
 
-    SCLogNotice("Kafka: shutdown stats: queued=%" PRIu64 " sent=%" PRIu64
-                " failed=%" PRIu64 " dropped_queue=%" PRIu64
-                " dropped_produce=%" PRIu64 " dropped_total=%" PRIu64
+    SCLogNotice("Kafka: shutdown stats: queued=%" PRIu64 " sent=%" PRIu64 " failed=%" PRIu64
+                " dropped_queue=%" PRIu64 " dropped_produce=%" PRIu64 " dropped_total=%" PRIu64
                 " bytes=%" PRIu64,
             queued, sent, failed, dropped_queue, dropped_produce, dropped_total, bytes);
 
@@ -1197,8 +1237,8 @@ static void KafkaDeinit(void *init_data)
 /**
  * \brief Write JSON event to queue
  */
-static int KafkaWrite(const char *buffer, const int buffer_len,
-                      const void *init_data, void *thread_data)
+static int KafkaWrite(
+        const char *buffer, const int buffer_len, const void *init_data, void *thread_data)
 {
     SCEveKafkaContext *ctx = (SCEveKafkaContext *)init_data;
     SCEveKafkaThreadData *td = (SCEveKafkaThreadData *)thread_data;
@@ -1207,8 +1247,8 @@ static int KafkaWrite(const char *buffer, const int buffer_len,
     }
 
     uint64_t dropped = 0;
-    KafkaQueuePushResult ret = KafkaQueuePush(
-            td->queue, (const uint8_t *)buffer, (size_t)buffer_len, &dropped);
+    KafkaQueuePushResult ret =
+            KafkaQueuePush(td->queue, (const uint8_t *)buffer, (size_t)buffer_len, &dropped);
     if (dropped > 0) {
         SC_ATOMIC_ADD(ctx->messages_dropped_queue, dropped);
     }
@@ -1261,8 +1301,8 @@ static void KafkaThreadDeinit(const void *init_data, void *thread_data)
 
 #ifdef UNITTESTS
 
-typedef rd_kafka_resp_err_t (*KafkaProduceHookFunc)(void *ctx, const char *topic,
-        char *data, const size_t len);
+typedef rd_kafka_resp_err_t (*KafkaProduceHookFunc)(
+        void *ctx, const char *topic, char *data, const size_t len);
 typedef void (*KafkaPollHookFunc)(void *ctx, const int timeout_ms);
 static rd_kafka_resp_err_t KafkaProduceWithRetryInternal(void *hook_ctx, const char *topic,
         char *data, const size_t len, KafkaProduceHookFunc produce_hook,
@@ -1410,8 +1450,8 @@ static int KafkaTestProduceWithRetryInternalQueueFullBeyondBudget(void)
         .poll_calls = 0,
     };
     uint32_t retries = 0;
-    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(&tctx, "eve", NULL, 0,
-            KafkaTestProduceHook, KafkaTestPollHook, &retries);
+    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(
+            &tctx, "eve", NULL, 0, KafkaTestProduceHook, KafkaTestPollHook, &retries);
     FAIL_IF(ret != RD_KAFKA_RESP_ERR__QUEUE_FULL);
     FAIL_IF(retries != KAFKA_QUEUE_FULL_RETRY_MAX);
     FAIL_IF(tctx.poll_calls != KAFKA_QUEUE_FULL_RETRY_MAX);
@@ -1429,8 +1469,8 @@ static int KafkaTestProduceWithRetryInternalQueueFullThenSuccess(void)
         .poll_calls = 0,
     };
     uint32_t retries = 0;
-    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(&tctx, "eve", NULL, 0,
-            KafkaTestProduceHook, KafkaTestPollHook, &retries);
+    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(
+            &tctx, "eve", NULL, 0, KafkaTestProduceHook, KafkaTestPollHook, &retries);
     FAIL_IF(ret != RD_KAFKA_RESP_ERR_NO_ERROR);
     FAIL_IF(retries != 2);
     FAIL_IF(tctx.poll_calls != 2);
@@ -1447,8 +1487,8 @@ static int KafkaTestProduceWithRetryInternalNonQueueFullImmediateError(void)
         .poll_calls = 0,
     };
     uint32_t retries = 0;
-    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(&tctx, "eve", NULL, 0,
-            KafkaTestProduceHook, KafkaTestPollHook, &retries);
+    rd_kafka_resp_err_t ret = KafkaProduceWithRetryInternal(
+            &tctx, "eve", NULL, 0, KafkaTestProduceHook, KafkaTestPollHook, &retries);
     FAIL_IF(ret != RD_KAFKA_RESP_ERR__UNKNOWN_TOPIC);
     FAIL_IF(retries != 0);
     FAIL_IF(tctx.poll_calls != 0);
@@ -1885,8 +1925,8 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestParseConfigDefaults", KafkaTestParseConfigDefaults);
     UtRegisterTest("KafkaTestParseConfigInvalidRingBufferMaxBytes",
             KafkaTestParseConfigInvalidRingBufferMaxBytes);
-    UtRegisterTest("KafkaTestParseConfigInvalidRingBufferSize",
-            KafkaTestParseConfigInvalidRingBufferSize);
+    UtRegisterTest(
+            "KafkaTestParseConfigInvalidRingBufferSize", KafkaTestParseConfigInvalidRingBufferSize);
     UtRegisterTest("KafkaTestQueueFullRetryBudget", KafkaTestQueueFullRetryBudget);
     UtRegisterTest("KafkaTestShouldRetryQueueFull", KafkaTestShouldRetryQueueFull);
     UtRegisterTest("KafkaTestProduceWithRetryInternalQueueFullBeyondBudget",
@@ -1899,8 +1939,8 @@ void SCEveKafkaInitialize(void)
             KafkaTestParseConfigHighThroughputDefaults);
     UtRegisterTest("KafkaTestParseConfigTopicAutoCreateEnabled",
             KafkaTestParseConfigTopicAutoCreateEnabled);
-    UtRegisterTest("KafkaTestParseConfigInvalidIntOverflow",
-            KafkaTestParseConfigInvalidIntOverflow);
+    UtRegisterTest(
+            "KafkaTestParseConfigInvalidIntOverflow", KafkaTestParseConfigInvalidIntOverflow);
     UtRegisterTest("KafkaTestParseConfigInvalidTopicPartitions",
             KafkaTestParseConfigInvalidTopicPartitions);
     UtRegisterTest("KafkaTestQueueBasicPushPop", KafkaTestQueueBasicPushPop);
@@ -1915,7 +1955,8 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);
     UtRegisterTest("KafkaTestDrainIdlePollsWithTimeout", KafkaTestDrainIdlePollsWithTimeout);
     UtRegisterTest("KafkaTestDrainUsesAutomaticPartition", KafkaTestDrainUsesAutomaticPartition);
-    UtRegisterTest("KafkaTestTopicCreateAutoCreateDisabled", KafkaTestTopicCreateAutoCreateDisabled);
+    UtRegisterTest(
+            "KafkaTestTopicCreateAutoCreateDisabled", KafkaTestTopicCreateAutoCreateDisabled);
     UtRegisterTest("KafkaTestTopicCreateAutoCreateEnabled", KafkaTestTopicCreateAutoCreateEnabled);
 #endif
 }
