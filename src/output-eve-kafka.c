@@ -76,7 +76,7 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
         int32_t partition, const uint8_t *data, size_t len, const void *key, size_t key_len);
 static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms);
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic, int32_t partition,
+        uint32_t max_batch, int idle_poll_ms, const char *topic,
         KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
         KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
@@ -128,6 +128,11 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic,
 
     /* Use COPY so drain helper retains ownership and can free after hook returns.
      * Retries for QUEUE_FULL are handled inline. */
+    if (partition != RD_KAFKA_PARTITION_UA) {
+        SCLogWarning("Kafka: ignoring non-automatic partition value %d", partition);
+        partition = RD_KAFKA_PARTITION_UA;
+    }
+
     uint32_t retries = 0;
     while (1) {
         rd_kafka_resp_err_t ret = rd_kafka_producev(kctx->rk,
@@ -157,7 +162,7 @@ static int KafkaDrainPollHook(void *ctx, void *rk, int timeout_ms)
 }
 
 static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
-        uint32_t max_batch, int idle_poll_ms, const char *topic, int32_t partition,
+        uint32_t max_batch, int idle_poll_ms, const char *topic,
         KafkaDrainProduceHookFunc produce_hook, void *produce_ctx,
         KafkaDrainPollHookFunc poll_hook, void *poll_ctx)
 {
@@ -190,7 +195,7 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry,
                 break;
             }
             rd_kafka_resp_err_t err = produce_hook(produce_ctx, topic,
-                    partition, entry->data, entry->len, NULL, 0);
+                    RD_KAFKA_PARTITION_UA, entry->data, entry->len, NULL, 0);
             if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
                 /* produce failed, entry data lost — counted by produce hook */
             }
@@ -1008,7 +1013,6 @@ static void *KafkaProducerThread(void *arg)
     while (SC_ATOMIC_GET(ctx->stop_flag) == 0) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
-                RD_KAFKA_PARTITION_UA,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         if (drained == 0) {
             usleep(1000);
@@ -1026,7 +1030,6 @@ static void *KafkaProducerThread(void *arg)
     while (1) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry,
                 ctx->setup.max_drain_batch, ctx->setup.idle_poll_ms, ctx->setup.topic,
-                RD_KAFKA_PARTITION_UA,
                 KafkaDrainProduceHook, ctx, KafkaDrainPollHook, ctx);
         remaining += drained;
         if (drained == 0)
@@ -1741,8 +1744,7 @@ static int KafkaTestDrainRoundRobinFairness(void)
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 1, 10, "test-topic",
-            RD_KAFKA_PARTITION_UA, KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook,
-            &dctx);
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 2);
     FAIL_IF(dctx.produced_count != 2);
@@ -1772,8 +1774,7 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
 
     KafkaTestDrainCtx dctx = { 0 };
     uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 17, "test-topic",
-            RD_KAFKA_PARTITION_UA, KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook,
-            &dctx);
+            KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 0);
     FAIL_IF(dctx.produced_count != 0);
@@ -1784,7 +1785,7 @@ static int KafkaTestDrainIdlePollsWithTimeout(void)
     PASS;
 }
 
-static int KafkaTestDrainUsesConfiguredPartition(void)
+static int KafkaTestDrainUsesAutomaticPartition(void)
 {
     SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
     FAIL_IF_NULL(registry);
@@ -1797,12 +1798,12 @@ static int KafkaTestDrainUsesConfiguredPartition(void)
     FAIL_IF(KafkaQueuePush(q0, data0, sizeof(data0), NULL) != KAFKA_QUEUE_PUSH_OK);
 
     KafkaTestDrainCtx dctx = { 0 };
-    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 10, "test-topic", 2,
+    uint32_t drained = KafkaDrainQueuesInternal(registry, 8, 10, "test-topic",
             KafkaTestDrainProduceHook, &dctx, KafkaTestDrainPollHook, &dctx);
 
     FAIL_IF(drained != 1);
     FAIL_IF(dctx.produced_count != 1);
-    FAIL_IF(dctx.partitions[0] != 2);
+    FAIL_IF(dctx.partitions[0] != RD_KAFKA_PARTITION_UA);
 
     SCFree(dctx.produced[0]);
     KafkaQueueRegistryDestroy(registry);
@@ -1913,7 +1914,7 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestKafkaWriteCountsDropOldest", KafkaTestKafkaWriteCountsDropOldest);
     UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);
     UtRegisterTest("KafkaTestDrainIdlePollsWithTimeout", KafkaTestDrainIdlePollsWithTimeout);
-    UtRegisterTest("KafkaTestDrainUsesConfiguredPartition", KafkaTestDrainUsesConfiguredPartition);
+    UtRegisterTest("KafkaTestDrainUsesAutomaticPartition", KafkaTestDrainUsesAutomaticPartition);
     UtRegisterTest("KafkaTestTopicCreateAutoCreateDisabled", KafkaTestTopicCreateAutoCreateDisabled);
     UtRegisterTest("KafkaTestTopicCreateAutoCreateEnabled", KafkaTestTopicCreateAutoCreateEnabled);
 #endif
