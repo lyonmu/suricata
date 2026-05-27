@@ -140,7 +140,7 @@ outputs:
       #
       #  # Topic settings
       #  topic-auto-create: no            # Enable automatic topic creation (default: no)
-      #  topic-partitions: 1              # Partitions for auto-created topics (default: 1)
+      #  topic-partitions: 3              # Partitions for auto-created topics (default: 3)
       #
       #  # Performance settings
       #  compression: none                # none|gzip|snappy|lz4|zstd (default: none)
@@ -148,24 +148,11 @@ outputs:
       #                                   #   0 = fire and forget (fastest, no durability)
       #                                   #   1 = leader ack (balanced)
       #                                   #   all = all replicas (slowest, most durable)
-      #  partition: -1                    # Target partition, -1 for auto-assign (default: -1)
+      #                                   # Message partitioning is automatic.
       #  ring-buffer-size: 65536          # Max messages in per-thread queue (default: 65536)
       #  ring-buffer-max-bytes: 67108864  # Max bytes in per-thread queue (default: 64MB)
       #  max-drain-batch: 256             # Max messages drained per poll cycle (default: 256)
       #  idle-poll-ms: 10                 # Poll timeout when no messages to drain (default: 10)
-      #
-      #  # librdkafka internal queue settings (usually don't need to change)
-      #  # Batching is handled by librdkafka internally via linger.ms
-      #  queue-buffering-max-messages: 100000  # Max messages in queue (default: 100000)
-      #  queue-buffering-max-kbytes: 131072    # Max queue size in KB (default: 128MB)
-      #  message-timeout-ms: 300000       # Message timeout (default: 5 min)
-      #  socket-timeout-ms: 30000         # Socket timeout (default: 30 sec)
-      #  metadata-max-age-ms: 300000      # Metadata refresh interval (default: 5 min)
-      #  retry-backoff-ms: 100            # Retry backoff interval (default: 100ms)
-      #  retry-backoff-max-ms: 1000       # Retry backoff max interval (default: 1000ms)
-      #  reconnect-backoff-ms: 100        # Reconnect backoff interval (default: 100ms)
-      #  reconnect-backoff-max-ms: 10000  # Reconnect backoff max interval (default: 10000ms)
-      #  linger-ms: 5                     # Producer linger time for batching (default: 5ms)
       #
       #  # Security settings
       #  security-protocol: plaintext     # plaintext|ssl|sasl_plaintext|sasl_ssl
