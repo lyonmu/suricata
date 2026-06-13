@@ -155,6 +155,11 @@
 #include "detect-icmpv4hdr.h"
 #include "detect-igmphdr.h"
 #include "detect-igmp-type.h"
+#include "detect-sctphdr.h"
+#include "detect-sctp-chunk-type.h"
+#include "detect-sctp-chunk-cnt.h"
+#include "detect-sctp-vtag.h"
+#include "detect-sctp-chunk-data.h"
 #include "detect-urilen.h"
 #include "detect-bsize.h"
 #include "detect-detection-filter.h"
@@ -330,6 +335,18 @@ static void PrintFeatureList(const SigTableElmt *e, char sep)
     } else {
         DEBUG_VALIDATE_BUG_ON(flags & (SIGMATCH_INFO_MULTI_UINT | SIGMATCH_INFO_ENUM_UINT |
                                               SIGMATCH_INFO_BITFLAGS_UINT));
+    }
+    if (flags & SIGMATCH_BAN_FIREWALL_RULE) {
+        if (prev == 1)
+            printf("%c", sep);
+        printf("banned from firewall rules");
+        prev = 1;
+    }
+    if (flags & SIGMATCH_BAN_FIREWALL_MODE) {
+        if (prev == 1)
+            printf("%c", sep);
+        printf("banned from firewall mode");
+        prev = 1;
     }
     if (e->Transform) {
         if (prev == 1)
@@ -664,6 +681,11 @@ void SigTableSetup(void)
     DetectIcmpv4HdrRegister();
     DetectIGMPHdrRegister();
     DetectIGMPTypeRegister();
+    DetectSCTPHdrRegister();
+    DetectSCTPChunkTypeRegister();
+    DetectSCTPChunkCntRegister();
+    DetectSCTPVtagRegister();
+    DetectSCTPChunkDataRegister();
     DetectTlsRegister();
     DetectTlsValidityRegister();
     DetectTlsVersionRegister();

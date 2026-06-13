@@ -600,6 +600,13 @@ static bool RuleMpmIsNegated(const Signature *s)
     return (cd->flags & DETECT_CONTENT_NEGATED) != 0;
 }
 
+typedef struct MpmStat {
+    uint32_t total;
+    uint32_t cnt;
+    uint32_t min;
+    uint32_t max;
+} MpmStat;
+
 static SCJsonBuilder *RulesGroupPrintSghStats(const DetectEngineCtx *de_ctx,
         const SigGroupHead *sgh, const int add_rules, const int add_mpm_stats)
 {
@@ -618,13 +625,12 @@ static SCJsonBuilder *RulesGroupPrintSghStats(const DetectEngineCtx *de_ctx,
 
     int max_buffer_type_id = de_ctx->buffer_type_id;
 
-    struct {
-        uint32_t total;
-        uint32_t cnt;
-        uint32_t min;
-        uint32_t max;
-    } mpm_stats[max_buffer_type_id];
-    memset(mpm_stats, 0x00, sizeof(mpm_stats));
+    MpmStat *mpm_stats = NULL;
+    if (add_mpm_stats) {
+        mpm_stats = SCCalloc(max_buffer_type_id, sizeof(MpmStat));
+        if (mpm_stats == NULL)
+            return NULL;
+    }
 
     uint32_t alstats[g_alproto_max];
     memset(alstats, 0, g_alproto_max * sizeof(uint32_t));
@@ -634,12 +640,16 @@ static SCJsonBuilder *RulesGroupPrintSghStats(const DetectEngineCtx *de_ctx,
     memset(alproto_mpm_bufs, 0, sizeof(alproto_mpm_bufs));
 
     DEBUG_VALIDATE_BUG_ON(sgh->init == NULL);
-    if (sgh->init == NULL)
+    if (sgh->init == NULL) {
+        SCFree(mpm_stats);
         return NULL;
+    }
 
     SCJsonBuilder *js = SCJbNewObject();
-    if (unlikely(js == NULL))
+    if (unlikely(js == NULL)) {
+        SCFree(mpm_stats);
         return NULL;
+    }
 
     SCJbSetUint(js, "id", sgh->id);
 
@@ -730,13 +740,14 @@ static SCJsonBuilder *RulesGroupPrintSghStats(const DetectEngineCtx *de_ctx,
                 mpms_max = w;
 
             BUG_ON(mpm_list >= max_buffer_type_id);
-            mpm_stats[mpm_list].total += w;
-            mpm_stats[mpm_list].cnt++;
-            if (mpm_stats[mpm_list].min == 0 || w < mpm_stats[mpm_list].min)
-                mpm_stats[mpm_list].min = w;
-            if (w > mpm_stats[mpm_list].max)
-                mpm_stats[mpm_list].max = w;
-
+            if (mpm_stats != NULL) {
+                mpm_stats[mpm_list].total += w;
+                mpm_stats[mpm_list].cnt++;
+                if (mpm_stats[mpm_list].min == 0 || w < mpm_stats[mpm_list].min)
+                    mpm_stats[mpm_list].min = w;
+                if (w > mpm_stats[mpm_list].max)
+                    mpm_stats[mpm_list].max = w;
+            }
             mpm_cnt++;
 
             if (w < 10) {
@@ -861,6 +872,7 @@ static SCJsonBuilder *RulesGroupPrintSghStats(const DetectEngineCtx *de_ctx,
 
     SCJbSetUint(js, "score", sgh->init->score);
     SCJbClose(js);
+    SCFree(mpm_stats);
 
     return js;
 }
@@ -1522,16 +1534,22 @@ static DetectPort *RulesGroupByPorts(DetectEngineCtx *de_ctx, uint8_t ipproto, u
         } else {
             /* Protocol does not match the Signature protocol and is non of IP, pkthdr */
             if (!DetectProtoContainsProto(&s->init_data->proto, ipproto)) {
-                SCLogDebug("skip");
+                SCLogDebug("skip s:%u for proto:%u", s->id, ipproto);
                 goto next;
             }
             /* Direction does not match Signature direction */
             if (direction == SIG_FLAG_TOSERVER) {
-                if (!(s->flags & SIG_FLAG_TOSERVER))
+                if (!(s->flags & SIG_FLAG_TOSERVER)) {
+                    SCLogDebug(
+                            "skip s:%u for proto:%u direction SIG_FLAG_TOSERVER", s->id, ipproto);
                     goto next;
+                }
             } else if (direction == SIG_FLAG_TOCLIENT) {
-                if (!(s->flags & SIG_FLAG_TOCLIENT))
+                if (!(s->flags & SIG_FLAG_TOCLIENT)) {
+                    SCLogDebug(
+                            "skip s:%u for proto:%u direction SIG_FLAG_TOCLIENT", s->id, ipproto);
                     goto next;
+                }
             }
 
             /* see if we want to exclude directionless sigs that really care only for
@@ -1573,6 +1591,7 @@ static DetectPort *RulesGroupByPorts(DetectEngineCtx *de_ctx, uint8_t ipproto, u
                 size_unique_port_arr =
                         SetUniquePortPoints(tmp2, unique_port_points, size_unique_port_arr);
             }
+            SCLogDebug("s:%u added to group (proto:%u)", s->id, ipproto);
 
             p = p->next;
         }
@@ -2202,8 +2221,10 @@ static int SigMatchPrepare(DetectEngineCtx *de_ctx)
 
     Signature *s = de_ctx->sig_list;
     for (; s != NULL; s = s->next) {
+        SCLogDebug("s:%u: prepare", s->id);
         /* set up inspect engines */
-        DetectEngineAppInspectionEngine2Signature(de_ctx, s);
+        if (DetectEngineAppInspectionEngine2Signature(de_ctx, s) != 0)
+            SCReturnInt(-1);
 
         /* built-ins */
         for (int type = 0; type < DETECT_SM_LIST_MAX; type++) {

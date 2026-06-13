@@ -317,6 +317,7 @@ int PrefilterAppendEngine(DetectEngineCtx *de_ctx, SigGroupHead *sgh, PrefilterP
 
     e->name = name;
     e->gid = PrefilterStoreGetId(de_ctx, e->name, e->Free);
+    SCLogDebug("sgh->init->pkt_engines %p", sgh->init->pkt_engines);
     return 0;
 }
 
@@ -936,6 +937,29 @@ static int SetupNonPrefilter(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
             continue; // done for this sig
         }
 
+        /* special case: insert sigs at hook before Signature::app_progress_hook for the HOOK_LTE
+         * case: we need a addition per hook to make sure that the sig is called when needed. For
+         * hook 0 it could have a preceding rule that makes sure this sig isn't triggered, but then
+         * for hook 1 we would need to be called. */
+        if (s->flags & SIG_FLAG_FW_HOOK_LTE) {
+            for (uint8_t state = 0; state < s->app_progress_hook; state++) {
+                SCLogDebug("handle HOOK %u LTE", state);
+                const int dir = (s->flags & SIG_FLAG_TOSERVER) ? 0 : 1;
+                const char *pname = DetectEngineAppHookToName(
+                        s->alproto, state, dir == 0 ? STREAM_TOSERVER : STREAM_TOCLIENT);
+                if (pname == NULL) {
+                    goto error;
+                }
+                const int sm_list = DetectEngineAppHookToSmlist(
+                        s->alproto, state, dir == 0 ? STREAM_TOSERVER : STREAM_TOCLIENT);
+                if (TxNonPFAddSig(de_ctx, tx_engines_hash, s->alproto, dir, (int16_t)state, sm_list,
+                            pname, s) != 0) {
+                    goto error;
+                }
+                tx_non_pf = true;
+            }
+        }
+
         for (uint32_t x = 0; x < s->init_data->buffer_index; x++) {
             const int list_id = s->init_data->buffers[x].id;
             const DetectBufferType *buf = DetectEngineBufferTypeGetById(de_ctx, list_id);
@@ -1067,6 +1091,7 @@ static int SetupNonPrefilter(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
                 pkt_mask = s->mask;
                 pkt_mask_init = true;
             }
+            SCLogDebug("s->id %u added", s->id);
         }
     }
 
@@ -1109,6 +1134,7 @@ static int SetupNonPrefilter(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
     tx_engines_hash = NULL;
 
     if (pkt_non_pf_array_size) {
+        SCLogDebug("pkt_non_pf_array_size %u", pkt_non_pf_array_size);
         struct PrefilterNonPFData *data =
                 SCCalloc(1, sizeof(*data) + pkt_non_pf_array_size * sizeof(data->array[0]));
         if (data == NULL)
@@ -1202,10 +1228,12 @@ int PrefilterSetupRuleGroup(DetectEngineCtx *de_ctx, SigGroupHead *sgh)
      * match arrays */
     PrefilterEngineList *el;
     if (sgh->init->pkt_engines != NULL) {
+        SCLogDebug("for %p we have %p", sgh, sgh->init->pkt_engines);
         uint32_t cnt = 0;
         for (el = sgh->init->pkt_engines ; el != NULL; el = el->next) {
             cnt++;
         }
+        SCLogDebug("cnt %u", cnt);
         sgh->pkt_engines = SCMallocAligned(cnt * sizeof(PrefilterEngine), CLS);
         if (sgh->pkt_engines == NULL) {
             return -1;

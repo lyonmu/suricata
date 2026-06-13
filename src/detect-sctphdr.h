@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -17,14 +17,11 @@
 
 /**
  * \file
- *
- * \author Victor Julien <victor@inliniac.net>
  */
 
-#ifndef SURICATA_LOG_HTTPLOG_H
-#define SURICATA_LOG_HTTPLOG_H
+#ifndef SURICATA_DETECT_SCTPHDR_H
+#define SURICATA_DETECT_SCTPHDR_H
 
-void LogHttpLogRegister(void);
-OutputInitResult LogHttpLogInitCtx(SCConfNode *);
+void DetectSCTPHdrRegister(void);
 
-#endif /* SURICATA_LOG_HTTPLOG_H */
+#endif /* SURICATA_DETECT_SCTPHDR_H */

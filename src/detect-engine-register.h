@@ -51,6 +51,11 @@ enum DetectKeywordId {
     DETECT_ICMPV4HDR,
     DETECT_IGMPHDR,
     DETECT_IGMP_TYPE,
+    DETECT_SCTPHDR,
+    DETECT_SCTP_CHUNK_TYPE,
+    DETECT_SCTP_CHUNK_CNT,
+    DETECT_SCTP_VTAG,
+    DETECT_SCTP_CHUNK_DATA,
     DETECT_DSIZE,
 
     DETECT_FLOW,
@@ -350,6 +355,10 @@ extern int DETECT_TBLSIZE_IDX;
 #define SIGMATCH_INFO_ENUM_UINT (1UL << (19))
 /** keyword is an uint with bitflags */
 #define SIGMATCH_INFO_BITFLAGS_UINT (1UL << (20))
+/** keyword cannot be used in firewall rules */
+#define SIGMATCH_BAN_FIREWALL_RULE (1UL << (21))
+/** keyword cannot be used in firewall mode */
+#define SIGMATCH_BAN_FIREWALL_MODE (1UL << (22))
 
 int SigTableList(const char *keyword);
 void SigTableCleanup(void);

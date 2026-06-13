@@ -897,9 +897,6 @@ static void DumpMatches(RuleAnalyzer *ctx, SCJsonBuilder *js, const SigMatchData
                     case DETECT_FLOWBITS_CMD_UNSET:
                         SCJbSetString(js, "cmd", "unset");
                         break;
-                    case DETECT_FLOWBITS_CMD_TOGGLE:
-                        SCJbSetString(js, "cmd", "toggle");
-                        break;
                 }
                 bool is_or = false;
                 SCJbOpenArray(js, "names");
@@ -1562,8 +1559,14 @@ void DumpPatterns(DetectEngineCtx *de_ctx)
         return;
 
     SCJsonBuilder *root_jb = SCJbNewObject();
-    SCJsonBuilder *arrays[de_ctx->buffer_type_id];
-    memset(&arrays, 0, sizeof(SCJsonBuilder *) * de_ctx->buffer_type_id);
+    if (root_jb == NULL) {
+        return;
+    }
+    SCJsonBuilder **arrays = SCCalloc(de_ctx->buffer_type_id, sizeof(SCJsonBuilder *));
+    if (arrays == NULL) {
+        SCJbFree(root_jb);
+        return;
+    }
 
     SCJbOpenArray(root_jb, "buffers");
 
@@ -1631,6 +1634,7 @@ void DumpPatterns(DetectEngineCtx *de_ctx)
     }
     SCMutexUnlock(&g_rules_analyzer_write_m);
     SCJbFree(root_jb);
+    SCFree(arrays);
 
     HashListTableFree(de_ctx->pattern_hash_table);
     de_ctx->pattern_hash_table = NULL;
@@ -2103,25 +2107,6 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
 
 #include "app-layer-parser.h"
 
-static const char *ActionScopeToString(enum ActionScope s)
-{
-    switch (s) {
-        case ACTION_SCOPE_PACKET:
-            return "packet";
-        case ACTION_SCOPE_FLOW:
-            return "flow";
-            break;
-        case ACTION_SCOPE_HOOK:
-            return "hook";
-        case ACTION_SCOPE_TX:
-            return "tx";
-        case ACTION_SCOPE_AUTO:
-            return "auto";
-    }
-    DEBUG_VALIDATE_BUG_ON(1);
-    return "unknown";
-}
-
 static void AddPolicy(const DetectEngineCtx *de_ctx, RuleAnalyzer *ctx, const AppProto a,
         const uint8_t state, const uint8_t direction)
 {
@@ -2184,6 +2169,11 @@ static void FirewallAddRulesForState(const DetectEngineCtx *de_ctx, const AppPro
             if (s->flags & SIG_FLAG_TOSERVER) {
                 continue;
             }
+        }
+
+        if ((s->flags & SIG_FLAG_FW_HOOK_LTE) && state < s->app_progress_hook) {
+            SCJbAppendString(ctx->js, s->sig_str);
+            accept_rules += ((s->action & ACTION_ACCEPT) != 0);
         }
 
         if (s->app_progress_hook == state) {

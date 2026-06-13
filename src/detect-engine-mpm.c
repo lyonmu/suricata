@@ -965,10 +965,23 @@ void PatternMatchThreadDestroy(MpmThreadCtx *mpm_thread_ctx, uint16_t mpm_matche
     SCLogDebug("mpm_thread_ctx %p, mpm_matcher %"PRIu16"", mpm_thread_ctx, mpm_matcher);
     MpmDestroyThreadCtx(mpm_thread_ctx, mpm_matcher);
 }
-void PatternMatchThreadPrepare(MpmThreadCtx *mpm_thread_ctx, uint16_t mpm_matcher)
+void PatternMatchThreadPrepare(MpmThreadCtx *mpm_thread_ctx, DetectEngineCtx *de_ctx)
 {
-    SCLogDebug("mpm_thread_ctx %p, type %"PRIu16, mpm_thread_ctx, mpm_matcher);
-    MpmInitThreadCtx(mpm_thread_ctx, mpm_matcher);
+    SCLogDebug("mpm_thread_ctx %p, type %" PRIu16, mpm_thread_ctx, de_ctx->mpm_matcher);
+    MpmCtx cum_mpm_ctx = { 0 };
+    for (HashListTableBucket *htb = HashListTableGetListHead(de_ctx->mpm_hash_table); htb != NULL;
+            htb = HashListTableGetListNext(htb)) {
+        // iterate all de_ctx mpms to merge one MpmCtx with max pattern_cnt and max max_pat_id
+        const MpmStore *ms = (MpmStore *)HashListTableGetListData(htb);
+        if (ms == NULL || ms->mpm_ctx == NULL) {
+            continue;
+        }
+        if (ms->mpm_ctx->pattern_cnt > cum_mpm_ctx.pattern_cnt)
+            cum_mpm_ctx.pattern_cnt = ms->mpm_ctx->pattern_cnt;
+        if (ms->mpm_ctx->max_pat_id > cum_mpm_ctx.max_pat_id)
+            cum_mpm_ctx.max_pat_id = ms->mpm_ctx->max_pat_id;
+    }
+    MpmInitThreadCtx(mpm_thread_ctx, &cum_mpm_ctx, de_ctx->mpm_matcher);
 }
 
 /** \brief Predict a strength value for patterns
@@ -1523,18 +1536,23 @@ static const DetectBufferMpmRegistry *GetByMpmStore(
 void MpmStoreReportStats(const DetectEngineCtx *de_ctx)
 {
     HashListTableBucket *htb = NULL;
+    uint32_t *appstats = NULL;
+    uint32_t *pktstats = NULL;
+    uint32_t *framestats = NULL;
 
     uint32_t stats[MPMB_MAX] = {0};
-    DEBUG_VALIDATE_BUG_ON(de_ctx->buffer_type_id > UINT16_MAX);
-    int app_mpms_cnt = de_ctx->buffer_type_id;
-    uint32_t appstats[app_mpms_cnt + 1];    // +1 to silence scan-build
-    memset(&appstats, 0x00, sizeof(appstats));
-    int pkt_mpms_cnt = de_ctx->buffer_type_id;
-    uint32_t pktstats[pkt_mpms_cnt + 1];    // +1 to silence scan-build
-    memset(&pktstats, 0x00, sizeof(pktstats));
-    int frame_mpms_cnt = de_ctx->buffer_type_id;
-    uint32_t framestats[frame_mpms_cnt + 1]; // +1 to silence scan-build
-    memset(&framestats, 0x00, sizeof(framestats));
+    appstats = SCCalloc(de_ctx->buffer_type_id, sizeof(uint32_t));
+    if (appstats == NULL) {
+        goto end;
+    }
+    pktstats = SCCalloc(de_ctx->buffer_type_id, sizeof(uint32_t));
+    if (pktstats == NULL) {
+        goto end;
+    }
+    framestats = SCCalloc(de_ctx->buffer_type_id, sizeof(uint32_t));
+    if (framestats == NULL) {
+        goto end;
+    }
 
     for (htb = HashListTableGetListHead(de_ctx->mpm_hash_table);
             htb != NULL;
@@ -1610,6 +1628,13 @@ void MpmStoreReportStats(const DetectEngineCtx *de_ctx)
             um = um->next;
         }
     }
+end:
+    if (appstats)
+        SCFree(appstats);
+    if (pktstats)
+        SCFree(pktstats);
+    if (framestats)
+        SCFree(framestats);
 }
 
 /**
@@ -2078,10 +2103,10 @@ static void PrepareMpms(DetectEngineCtx *de_ctx, SigGroupHead *sh)
 
     AppProto engines[max_buffer_id][g_alproto_max];
     memset(engines, 0, sizeof(engines));
-    int engines_idx[max_buffer_id];
-    memset(engines_idx, 0, sizeof(engines_idx));
-    int types[max_buffer_id];
-    memset(types, 0, sizeof(types));
+    int *engines_idx = SCCalloc(max_buffer_id, sizeof(int));
+    BUG_ON(engines_idx == NULL);
+    int *types = SCCalloc(max_buffer_id, sizeof(int));
+    BUG_ON(types == NULL);
 
     /* flag the list+directions we have engines for as active */
     for (DetectBufferMpmRegistry *a = de_ctx->pkt_mpms_list; a != NULL; a = a->next) {
@@ -2318,6 +2343,8 @@ static void PrepareMpms(DetectEngineCtx *de_ctx, SigGroupHead *sh)
         }
     }
     HashListTableFree(bufs);
+    SCFree(engines_idx);
+    SCFree(types);
 }
 
 /** \brief Prepare the pattern matcher ctx in a sig group head.

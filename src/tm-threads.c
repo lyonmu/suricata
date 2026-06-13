@@ -701,7 +701,7 @@ void TmSlotSetFuncAppend(ThreadVars *tv, TmModule *tm, const void *data)
     }
 }
 
-#if !defined __CYGWIN__ && !defined OS_WIN32 && !defined __OpenBSD__ && !defined sun
+#if !defined __CYGWIN__ && !defined OS_WIN32 && !defined __OpenBSD__ && !defined __sun
 static int SetCPUAffinitySet(cpu_set_t *cs)
 {
 #if defined OS_FREEBSD
@@ -735,7 +735,7 @@ static int SetCPUAffinitySet(cpu_set_t *cs)
  */
 static int SetCPUAffinity(uint16_t cpuid)
 {
-#if defined __OpenBSD__ || defined sun
+#if defined __OpenBSD__ || defined __sun
     return 0;
 #else
     int cpu = (int)cpuid;
@@ -871,7 +871,7 @@ TmEcode TmThreadSetupOptions(ThreadVars *tv)
         SetCPUAffinity(tv->cpu_affinity);
     }
 
-#if !defined __CYGWIN__ && !defined OS_WIN32 && !defined __OpenBSD__ && !defined sun
+#if !defined __CYGWIN__ && !defined OS_WIN32 && !defined __OpenBSD__ && !defined __sun
     if (tv->thread_setup_flags & THREAD_SET_PRIORITY)
         TmThreadSetPrio(tv);
     if (tv->thread_setup_flags & THREAD_SET_AFFTYPE) {
@@ -941,18 +941,15 @@ ThreadVars *TmThreadCreate(const char *name, const char *inq_name, const char *i
                            const char *outq_name, const char *outqh_name, const char *slots,
                            void * (*fn_p)(void *), int mucond)
 {
-    ThreadVars *tv = NULL;
     Tmq *tmq = NULL;
     Tmqh *tmqh = NULL;
 
     SCLogDebug("creating thread \"%s\"...", name);
 
-    /* XXX create separate function for this: allocate a thread container */
-    tv = SCCalloc(1, sizeof(ThreadVars) + SCThreadStorageSize());
+    ThreadVars *tv = ThreadVarsAlloc();
     if (unlikely(tv == NULL))
         goto error;
 
-    SC_ATOMIC_INIT(tv->flags);
     StatsThreadInit(&tv->stats);
 
     strlcpy(tv->name, name, sizeof(tv->name));
@@ -1046,8 +1043,7 @@ ThreadVars *TmThreadCreate(const char *name, const char *inq_name, const char *i
 error:
     SCLogError("failed to setup a thread");
 
-    if (tv != NULL)
-        SCFree(tv);
+    ThreadVarsFree(tv);
     return NULL;
 }
 
@@ -1675,7 +1671,7 @@ static void TmThreadFree(ThreadVars *tv)
     }
 
     TmThreadsUnregisterThread(tv->id);
-    SCFree(tv);
+    ThreadVarsFree(tv);
 }
 
 void TmThreadClearThreadsFamily(int family)

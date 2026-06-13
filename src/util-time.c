@@ -65,6 +65,7 @@
 #include "tm-threads.h"
 #include "util-debug.h"
 #include "util-time.h"
+#include "util-unittest.h"
 
 #ifdef UNITTESTS
 static struct timeval current_time = { 0, 0 };
@@ -462,7 +463,7 @@ time_t SCMkTimeUtc (struct tm *tp)
     result += tp->tm_min;
     result *= 60;
     result += tp->tm_sec;
-#ifndef OS_WIN32
+#if !defined(OS_WIN32) && !defined(__sun)
     if (tp->tm_gmtoff)
         result -= tp->tm_gmtoff;
 #endif
@@ -497,7 +498,7 @@ int SCStringPatternToTime (char *string, const char **patterns, int num_patterns
         tp->tm_hour = tp->tm_min = tp->tm_sec = 0;
         tp->tm_year = tp->tm_mon = tp->tm_mday = tp->tm_wday = INT_MIN;
         tp->tm_isdst = -1;
-#ifndef OS_WIN32
+#if !defined(OS_WIN32) && !defined(__sun)
         tp->tm_gmtoff = 0;
         tp->tm_zone = NULL;
 #endif
@@ -650,4 +651,43 @@ uint64_t SCTimespecAsEpochMillis(const struct timespec* ts)
 uint64_t TimeDifferenceMicros(struct timeval t0, struct timeval t1)
 {
     return (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000L + (t1.tv_usec - t0.tv_usec);
+}
+
+#ifdef UNITTESTS
+static int CreateFormattedTimeStringTest01(void)
+{
+    /* strftime, which underpins CreateFormattedTimeString, does not seem to
+     * function properly on MinGW. */
+#ifndef __MINGW32__
+    struct tm tm;
+    tm.tm_sec = 0;
+    tm.tm_min = 30;
+    tm.tm_hour = 4;
+    tm.tm_mday = 13;
+    tm.tm_mon = 0;
+    tm.tm_year = 114;
+    tm.tm_wday = 1;
+    tm.tm_yday = 13;
+    tm.tm_isdst = -1;
+
+    /* mktime() interprets the broken-down time as local time and SCLocalTime()
+     * converts it back, so the result is independent of the active timezone.
+     * The CI runs this test under several timezones to guard that round trip. */
+    struct tm local_tm;
+    struct tm *t = SCLocalTime(mktime(&tm), &local_tm);
+
+    char buf[128] = { 0 };
+    CreateFormattedTimeString(t, "%m/%d/%y-%H:%M:%S", buf, sizeof(buf));
+
+    FAIL_IF(strcmp(buf, "01/13/14-04:30:00") != 0);
+#endif
+    PASS;
+}
+#endif /* UNITTESTS */
+
+void SCTimeRegisterTests(void)
+{
+#ifdef UNITTESTS
+    UtRegisterTest("CreateFormattedTimeStringTest01", CreateFormattedTimeStringTest01);
+#endif
 }

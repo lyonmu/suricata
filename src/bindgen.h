@@ -47,6 +47,10 @@
 #include "detect-parse.h"
 
 #include "util-debug.h"
+#include "util-file.h"
+#include "util-mpm.h"
+#include "util-var.h"
+#include "util-spm-bs.h"
 
 #include "app-layer-detect-proto.h"
 #include "app-layer-parser.h"
@@ -56,13 +60,11 @@
 #include "app-layer-htp-range.h"
 #include "app-layer-frames.h"
 
-#include "util-mpm.h"
-#include "util-file.h"
-#include "util-var.h"
-#include "util-spm-bs.h"
-
 #include "flow-bindgen.h"
 #include "flow-callbacks.h"
+
+#include "thread-callbacks.h"
+#include "thread-storage.h"
 
 #include "reputation.h"
 #include "feature.h"
