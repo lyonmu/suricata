@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2017 Open Information Security Foundation
+/* Copyright (C) 2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -18,12 +18,10 @@
 /**
  * \file
  *
- * \author Pierre Chifflier <chifflier@wzdftpd.net>
+ * \author Jeff Lucovsky <jlucovsky@oisf.net>
  */
-
-#ifndef SURICATA_DETECT_KRB5_CNAME_H
-#define SURICATA_DETECT_KRB5_CNAME_H
-
-void DetectKrb5CNameRegister(void);
-
-#endif /* SURICATA_DETECT_KRB5_CNAME_H */
+#ifndef SURICATA_LOG_MAINTENANCE_H__
+#define SURICATA_LOG_MAINTENANCE_H__
+void LogMaintenanceThreadSpawn(void);
+int OutputFlushInterval(void);
+#endif /* SURICATA_LOG_MAINTENANCE_H__ */

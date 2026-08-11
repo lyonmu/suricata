@@ -1290,10 +1290,9 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
     if (!(HAS_SPACE(extensions_len)))
         goto invalid_length;
 
-    uint16_t processed_len = 0;
+    uint32_t processed_len = 0;
     /* coverity[tainted_data] */
-    while (processed_len < extensions_len)
-    {
+    while (processed_len < (uint32_t)extensions_len) {
         if (!(HAS_SPACE(2)))
             goto invalid_length;
 
@@ -1309,6 +1308,9 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
         if (!(HAS_SPACE(ext_len)))
             goto invalid_length;
 
+        if (processed_len + 4UL + (uint32_t)ext_len > (uint32_t)extensions_len)
+            goto invalid_length;
+
         switch (ext_type) {
             case SSL_EXTENSION_SNI:
             {
@@ -1318,7 +1320,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
                 if (ret < 0)
                     goto end;
 
-                input += ret;
+                input += ext_len;
 
                 break;
             }
@@ -1332,7 +1334,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
                 if (ret < 0)
                     goto end;
 
-                input += ret;
+                input += ext_len;
 
                 break;
             }
@@ -1346,7 +1348,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
                 if (ret < 0)
                     goto end;
 
-                input += ret;
+                input += ext_len;
 
                 break;
             }
@@ -1357,7 +1359,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
                 if (ret < 0)
                     goto end;
 
-                input += ret;
+                input += ext_len;
 
                 break;
             }
@@ -1393,7 +1395,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
                 if (ret < 0)
                     goto end;
 
-                input += ret;
+                input += ext_len;
 
                 break;
             }
@@ -1433,7 +1435,7 @@ static inline int TLSDecodeHSHelloExtensions(SSLState *ssl_state,
             }
         }
 
-        processed_len += ext_len + 4;
+        processed_len += (uint32_t)ext_len + 4UL;
     }
 
 end:
@@ -3137,7 +3139,7 @@ static void CheckJA3Enabled(void)
     const char *strval = NULL;
     /* Check if we should generate JA3 fingerprints */
     int enable_ja3 = SSL_CONFIG_DEFAULT_JA3;
-    if (SCConfGet("app-layer.protocols.tls.ja3-fingerprints", &strval) != 1) {
+    if (SCConfGetNonNull("app-layer.protocols.tls.ja3-fingerprints", &strval) != 1) {
         enable_ja3 = SSL_CONFIG_DEFAULT_JA3;
     } else if (strcmp(strval, "auto") == 0) {
         enable_ja3 = SSL_CONFIG_DEFAULT_JA3;
@@ -3162,7 +3164,7 @@ static void CheckJA4Enabled(void)
     const char *strval = NULL;
     /* Check if we should generate JA4 fingerprints */
     int enable_ja4 = SSL_CONFIG_DEFAULT_JA4;
-    if (SCConfGet("app-layer.protocols.tls.ja4-fingerprints", &strval) != 1) {
+    if (SCConfGetNonNull("app-layer.protocols.tls.ja4-fingerprints", &strval) != 1) {
         enable_ja4 = SSL_CONFIG_DEFAULT_JA4;
     } else if (strcmp(strval, "auto") == 0) {
         enable_ja4 = SSL_CONFIG_DEFAULT_JA4;

@@ -5594,6 +5594,10 @@
                             "type": "string"
                         }
                     }
+                },
+                "server_security_failure_reason": {
+                    "description": "The string describing the reason why the server failed the security Handshake, see rfc 6143 section 7.1",
+                    "type": "string"
                 }
             }
         },
@@ -6140,7 +6144,12 @@
             "additionalProperties": false,
             "properties": {
                 "community": {
-                    "type": "string"
+                    "type": "string",
+                    "suricata": {
+                        "keywords": [
+                            "snmp.community"
+                        ]
+                    }
                 },
                 "pdu_type": {
                     "type": "string",
@@ -6151,10 +6160,20 @@
                     }
                 },
                 "trap_address": {
-                    "type": "string"
+                    "type": "string",
+                    "suricata": {
+                        "keywords": [
+                            "snmp.trap_address"
+                        ]
+                    }
                 },
                 "trap_oid": {
-                    "type": "string"
+                    "type": "string",
+                    "suricata": {
+                        "keywords": [
+                            "snmp.trap_oid"
+                        ]
+                    }
                 },
                 "trap_type": {
                     "type": "string",
@@ -6165,7 +6184,12 @@
                     }
                 },
                 "usm": {
-                    "type": "string"
+                    "type": "string",
+                    "suricata": {
+                        "keywords": [
+                            "snmp.usm"
+                        ]
+                    }
                 },
                 "vars": {
                     "type": "array",
@@ -8981,6 +9005,10 @@
         "stream_tcp": {
             "type": "object",
             "additionalProperties": true
+        },
+        "sub_state": {
+            "type": "string",
+            "description": "Transaction type or sub state."
         },
         "suricata_version": {
             "type": "string"
