@@ -885,13 +885,11 @@ const char *DetectEngineAppHookToName(
 int DetectEngineAppHookToSmlist(
         const AppProto p, const uint8_t sub_state, const uint8_t state, const uint8_t direction)
 {
-    const char *app_proto = AppProtoToString(p);
+    const char *app_proto = AppProtoToStringRaw(p);
     if (app_proto == NULL) {
         SCLogError("unknown app_proto %u", p);
         return -1;
     }
-    if (strcmp(app_proto, "http") == 0)
-        app_proto = "http1";
 
     char generic_hook_name[256];
     if (sub_state == 0) {
@@ -1829,7 +1827,7 @@ void DetectBufferTypeCloseRegistration(void)
 }
 
 int DetectEngineBufferTypeGetByIdTransforms(
-        DetectEngineCtx *de_ctx, const int id, TransformData *transforms, int transform_cnt)
+        DetectEngineCtx *de_ctx, const int id, TransformData *transforms, uint8_t transform_cnt)
 {
     const DetectBufferType *base_map = DetectEngineBufferTypeGetById(de_ctx, id);
     if (!base_map) {
