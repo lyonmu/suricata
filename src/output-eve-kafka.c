@@ -53,9 +53,12 @@
 #error "Kafka EVE output requires librdkafka >= 2.3.0"
 #endif
 
-#define OUTPUT_NAME                    "kafka"
-#define KAFKA_QUEUE_FULL_RETRY_MAX     3
-#define KAFKA_QUEUE_FULL_RETRY_POLL_MS 10
+#define OUTPUT_NAME                         "kafka"
+#define KAFKA_QUEUE_FULL_RETRY_MAX          3
+#define KAFKA_QUEUE_FULL_RETRY_POLL_MS      10
+#define KAFKA_SHUTDOWN_DRAIN_TIMEOUT_MS     10000
+#define KAFKA_SHUTDOWN_FLUSH_TIMEOUT_MS     10000
+#define KAFKA_DELIVERY_FAILURE_LOG_INTERVAL 1000
 
 /* Forward declarations */
 static void *KafkaProducerThread(void *arg);
@@ -79,6 +82,24 @@ static uint32_t KafkaDrainQueuesInternal(SCEveKafkaQueueRegistry *registry, uint
         int idle_poll_ms, const char *topic, KafkaDrainProduceHookFunc produce_hook,
         void *produce_ctx, KafkaDrainPollHookFunc poll_hook, void *poll_ctx);
 static SCEveKafkaQueueEntry *KafkaQueuePop(SCEveKafkaQueue *queue);
+
+static uint64_t KafkaMonotonicTimeMs(void)
+{
+#ifdef CLOCK_MONOTONIC
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+    }
+#endif
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+}
+
+static bool KafkaShouldLogDeliveryFailure(const uint64_t failure_count)
+{
+    return failure_count == 1 || failure_count % KAFKA_DELIVERY_FAILURE_LOG_INTERVAL == 0;
+}
 
 static int KafkaDupString(const char *src, char **dst, const char *name)
 {
@@ -118,6 +139,12 @@ static inline bool KafkaShouldRetryQueueFull(
     return ret == RD_KAFKA_RESP_ERR__QUEUE_FULL && KafkaQueueFullRetryBudget(retry_count);
 }
 
+static inline bool KafkaShouldRetryQueueFullWhileRunning(
+        const rd_kafka_resp_err_t ret, const uint32_t retry_count, const bool stopping)
+{
+    return !stopping && KafkaShouldRetryQueueFull(ret, retry_count);
+}
+
 static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic, int32_t partition,
         const uint8_t *data, size_t len, const void *key, size_t key_len)
 {
@@ -140,7 +167,8 @@ static rd_kafka_resp_err_t KafkaDrainProduceHook(void *ctx, const char *topic, i
         if (ret == RD_KAFKA_RESP_ERR_NO_ERROR) {
             return ret;
         }
-        if (KafkaShouldRetryQueueFull(ret, retries)) {
+        if (KafkaShouldRetryQueueFullWhileRunning(
+                    ret, retries, SC_ATOMIC_GET(kctx->stop_flag) != 0)) {
             retries++;
             rd_kafka_poll(kctx->rk, KAFKA_QUEUE_FULL_RETRY_POLL_MS);
             continue;
@@ -389,6 +417,25 @@ static void KafkaQueueRegistryCloseAll(SCEveKafkaQueueRegistry *registry)
         KafkaQueueClose(registry->queues[i]);
     }
     SCMutexUnlock(&registry->lock);
+}
+
+static uint64_t KafkaQueueRegistryDiscardAll(SCEveKafkaQueueRegistry *registry)
+{
+    uint64_t discarded = 0;
+
+    SCMutexLock(&registry->lock);
+    for (uint32_t i = 0; i < registry->queue_count; i++) {
+        SCEveKafkaQueue *queue = registry->queues[i];
+        SCSpinLock(&queue->lock);
+        while (queue->count > 0) {
+            KafkaQueueDropOldestLocked(queue);
+            discarded++;
+        }
+        SCSpinUnlock(&queue->lock);
+    }
+    SCMutexUnlock(&registry->lock);
+
+    return discarded;
 }
 
 static void KafkaQueueRegistryDestroy(SCEveKafkaQueueRegistry *registry)
@@ -878,8 +925,13 @@ static void KafkaDeliveryReportCallback(
     SC_ATOMIC_ADD(ctx->delivery_callback_count, 1);
 
     if (rkmessage->err) {
-        SCLogError("Kafka message delivery failed: %s", rd_kafka_err2str(rkmessage->err));
-        SC_ATOMIC_ADD(ctx->messages_failed, 1);
+        uint64_t failure_count = SC_ATOMIC_ADD(ctx->messages_failed, 1) + 1;
+        if (KafkaShouldLogDeliveryFailure(failure_count)) {
+            SCLogError("Kafka message delivery failed: %s (failure count: %" PRIu64
+                       "; repeated errors are logged every %d failures)",
+                    rd_kafka_err2str(rkmessage->err), failure_count,
+                    KAFKA_DELIVERY_FAILURE_LOG_INTERVAL);
+        }
     } else {
         SC_ATOMIC_ADD(ctx->messages_sent, 1);
         SC_ATOMIC_ADD(ctx->bytes_sent, rkmessage->len);
@@ -1063,10 +1115,13 @@ static void *KafkaProducerThread(void *arg)
     /* Close all registered queues to reject new writes, then drain remaining messages */
     KafkaQueueRegistryCloseAll(ctx->registry);
 
-    /* Drain remaining messages in passes until all queues are empty */
-    uint32_t remaining = 0;
+    /* Bound application queue draining so a full librdkafka queue cannot make
+     * shutdown take hours while Kafka is unavailable. Queue-full retries are
+     * disabled after stop_flag is set. */
+    uint64_t remaining = 0;
     uint32_t pass = 0;
-    while (1) {
+    const uint64_t drain_deadline = KafkaMonotonicTimeMs() + KAFKA_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    while (KafkaMonotonicTimeMs() < drain_deadline) {
         uint32_t drained = KafkaDrainQueuesInternal(ctx->registry, ctx->setup.max_drain_batch,
                 ctx->setup.idle_poll_ms, ctx->setup.topic, KafkaDrainProduceHook, ctx,
                 KafkaDrainPollHook, ctx);
@@ -1075,12 +1130,25 @@ static void *KafkaProducerThread(void *arg)
             break;
         pass++;
     }
-    SCLogNotice(
-            "Kafka: producer thread drained %u remaining messages in %u passes", remaining, pass);
 
-    /* Wait for librdkafka internal queue to drain */
+    uint64_t discarded = KafkaQueueRegistryDiscardAll(ctx->registry);
+    if (discarded > 0) {
+        SC_ATOMIC_ADD(ctx->messages_dropped_queue, discarded);
+        SCLogWarning("Kafka: shutdown drain deadline reached; discarded %" PRIu64
+                     " messages still in application queues",
+                discarded);
+    }
+    SCLogNotice("Kafka: producer thread drained %" PRIu64 " remaining messages in %u passes",
+            remaining, pass);
+
+    /* Wait for librdkafka internal queue to drain. */
     SCLogInfo("Kafka producer thread: flushing librdkafka queue...");
-    rd_kafka_flush(ctx->rk, 10000); /* 10 second timeout */
+    rd_kafka_resp_err_t flush_result = rd_kafka_flush(ctx->rk, KAFKA_SHUTDOWN_FLUSH_TIMEOUT_MS);
+    if (flush_result != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        SCLogWarning("Kafka: flush did not complete before shutdown deadline: %s "
+                     "(%d messages still pending)",
+                rd_kafka_err2str(flush_result), rd_kafka_outq_len(ctx->rk));
+    }
 
     SCLogInfo("Kafka producer thread: exiting");
     return NULL;
@@ -1410,6 +1478,23 @@ static int KafkaTestShouldRetryQueueFull(void)
     PASS;
 }
 
+static int KafkaTestShutdownDisablesQueueFullRetry(void)
+{
+    FAIL_IF_NOT(KafkaShouldRetryQueueFullWhileRunning(RD_KAFKA_RESP_ERR__QUEUE_FULL, 0, false));
+    FAIL_IF(KafkaShouldRetryQueueFullWhileRunning(RD_KAFKA_RESP_ERR__QUEUE_FULL, 0, true));
+    PASS;
+}
+
+static int KafkaTestDeliveryFailureLogRateLimit(void)
+{
+    FAIL_IF_NOT(KafkaShouldLogDeliveryFailure(1));
+    FAIL_IF(KafkaShouldLogDeliveryFailure(2));
+    FAIL_IF(KafkaShouldLogDeliveryFailure(KAFKA_DELIVERY_FAILURE_LOG_INTERVAL - 1));
+    FAIL_IF_NOT(KafkaShouldLogDeliveryFailure(KAFKA_DELIVERY_FAILURE_LOG_INTERVAL));
+    FAIL_IF_NOT(KafkaShouldLogDeliveryFailure(KAFKA_DELIVERY_FAILURE_LOG_INTERVAL * 2));
+    PASS;
+}
+
 typedef struct KafkaTestProduceHooksCtx_ {
     rd_kafka_resp_err_t sequence[8];
     uint32_t sequence_len;
@@ -1679,6 +1764,33 @@ static int KafkaTestQueueRegistryRegistersMultipleQueues(void)
     PASS;
 }
 
+static int KafkaTestQueueRegistryDiscardAll(void)
+{
+    SCEveKafkaQueueRegistry *registry = KafkaQueueRegistryCreate();
+    FAIL_IF_NULL(registry);
+
+    SCEveKafkaQueue *q0 = KafkaQueueCreate(4, 64);
+    SCEveKafkaQueue *q1 = KafkaQueueCreate(4, 64);
+    FAIL_IF_NULL(q0);
+    FAIL_IF_NULL(q1);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q0) != 0);
+    FAIL_IF(KafkaQueueRegistryRegister(registry, q1) != 0);
+
+    const uint8_t data[] = "message";
+    FAIL_IF(KafkaQueuePush(q0, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q0, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
+    FAIL_IF(KafkaQueuePush(q1, data, sizeof(data), NULL) != KAFKA_QUEUE_PUSH_OK);
+
+    FAIL_IF(KafkaQueueRegistryDiscardAll(registry) != 3);
+    FAIL_IF(q0->count != 0);
+    FAIL_IF(q0->current_bytes != 0);
+    FAIL_IF(q1->count != 0);
+    FAIL_IF(q1->current_bytes != 0);
+
+    KafkaQueueRegistryDestroy(registry);
+    PASS;
+}
+
 static int KafkaTestKafkaWriteUsesThreadQueue(void)
 {
     SCEveKafkaContext ctx = { 0 };
@@ -1929,6 +2041,9 @@ void SCEveKafkaInitialize(void)
             "KafkaTestParseConfigInvalidRingBufferSize", KafkaTestParseConfigInvalidRingBufferSize);
     UtRegisterTest("KafkaTestQueueFullRetryBudget", KafkaTestQueueFullRetryBudget);
     UtRegisterTest("KafkaTestShouldRetryQueueFull", KafkaTestShouldRetryQueueFull);
+    UtRegisterTest(
+            "KafkaTestShutdownDisablesQueueFullRetry", KafkaTestShutdownDisablesQueueFullRetry);
+    UtRegisterTest("KafkaTestDeliveryFailureLogRateLimit", KafkaTestDeliveryFailureLogRateLimit);
     UtRegisterTest("KafkaTestProduceWithRetryInternalQueueFullBeyondBudget",
             KafkaTestProduceWithRetryInternalQueueFullBeyondBudget);
     UtRegisterTest("KafkaTestProduceWithRetryInternalQueueFullThenSuccess",
@@ -1950,6 +2065,7 @@ void SCEveKafkaInitialize(void)
     UtRegisterTest("KafkaTestQueueClosedRejectsWrites", KafkaTestQueueClosedRejectsWrites);
     UtRegisterTest("KafkaTestQueueRegistryRegistersMultipleQueues",
             KafkaTestQueueRegistryRegistersMultipleQueues);
+    UtRegisterTest("KafkaTestQueueRegistryDiscardAll", KafkaTestQueueRegistryDiscardAll);
     UtRegisterTest("KafkaTestKafkaWriteUsesThreadQueue", KafkaTestKafkaWriteUsesThreadQueue);
     UtRegisterTest("KafkaTestKafkaWriteCountsDropOldest", KafkaTestKafkaWriteCountsDropOldest);
     UtRegisterTest("KafkaTestDrainRoundRobinFairness", KafkaTestDrainRoundRobinFairness);

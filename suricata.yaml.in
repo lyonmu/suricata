@@ -130,6 +130,18 @@ outputs:
                                       ## this number of events. Set to 0 to disable trimming.
                                       ## Only used when mode is set to xadd/stream.
       #  stream-trim-exact: false     ## Trim exactly to the maximum stream length above.
+                                      ## Default: use inexact trimming (inexact by a few
+                                      ## tens of items)
+                                      ## Only used when mode is set to xadd/stream.
+      # Redis pipelining set up. This will enable to only do a query every
+      # 'batch-size' events. This should lower the latency induced by network
+      # connection at the cost of some memory. There is no flushing implemented
+      # so this setting should be reserved to high traffic Suricata deployments.
+      #  pipelining:
+      #    enabled: yes ## set enable to yes to enable query pipelining
+      #    batch-size: 10 ## number of entries to keep in buffer
+
+      # Kafka output configuration
       #kafka:
       #  # Required settings
       #  brokers: localhost:9092          # Comma-separated broker list
@@ -163,16 +175,6 @@ outputs:
       #  sasl-mechanism: PLAIN            # PLAIN|SCRAM-SHA-256|SCRAM-SHA-512
       #  sasl-username: user
       #  sasl-password: pass
-                                      ## Default: use inexact trimming (inexact by a few
-                                      ## tens of items)
-                                      ## Only used when mode is set to xadd/stream.
-      # Redis pipelining set up. This will enable to only do a query every
-      # 'batch-size' events. This should lower the latency induced by network
-      # connection at the cost of some memory. There is no flushing implemented
-      # so this setting should be reserved to high traffic Suricata deployments.
-      #  pipelining:
-      #    enabled: yes ## set enable to yes to enable query pipelining
-      #    batch-size: 10 ## number of entries to keep in buffer
 
       # Include top level metadata. Default yes.
       #metadata: no
