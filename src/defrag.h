@@ -24,6 +24,7 @@
 #ifndef SURICATA_DEFRAG_H
 #define SURICATA_DEFRAG_H
 
+#include "tree.h"
 #include "threads.h"
 #include "util-pool.h"
 #include "threadvars.h"
@@ -102,6 +103,8 @@ typedef struct DefragTracker_ {
     uint8_t seen_last; /**< Has this tracker seen the last fragment? */
 
     uint8_t remove; /**< remove */
+
+    uint16_t tunnel_id; /**< Tunnel identifier. */
 
     Address src_addr; /**< Source address for this tracker. */
     Address dst_addr; /**< Destination address for this tracker. */

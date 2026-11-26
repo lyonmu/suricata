@@ -578,18 +578,7 @@ impl DNSState {
     }
 
     fn free_tx(&mut self, tx_id: u64) {
-        let len = self.transactions.len();
-        let mut found = false;
-        let mut index = 0;
-        for i in 0..len {
-            let tx = &self.transactions[i];
-            if tx.id == tx_id + 1 {
-                found = true;
-                index = i;
-                break;
-            }
-        }
-        if found {
+        if let Some(index) = self.transactions.iter().position(|tx| tx.id == tx_id + 1) {
             self.transactions.remove(index);
         }
     }
@@ -711,7 +700,7 @@ impl DNSState {
             if is_dns || is_incomplete {
                 self.gap = false;
             } else {
-                AppLayerResult::ok();
+                return AppLayerResult::ok();
             }
         }
 
@@ -1211,6 +1200,19 @@ pub unsafe extern "C" fn SCDnsTxGetAdditionalRdata(
 #[no_mangle]
 pub extern "C" fn SCDnsTxGetResponseFlags(tx: &mut DNSTransaction) -> u16 {
     return tx.rcode();
+}
+
+/// Get the DNS request header flags for a transaction, 0 when there is
+/// no request in the transaction. The recursion desired (RD) bit is
+/// copied into the response header (RFC 1035 4.1.1), but this accessor
+/// reports it from the request only: a response-only transaction
+/// reports false.
+#[no_mangle]
+pub extern "C" fn SCDnsTxGetRequestFlags(tx: &mut DNSTransaction) -> u16 {
+    match &tx.request {
+        Some(msg) => return msg.header.flags,
+        None => return 0,
+    }
 }
 
 pub(crate) unsafe extern "C" fn probe_udp(

@@ -51,7 +51,6 @@
 
 #include "flow-util.h"
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-print.h"
 #include "util-byte.h"
@@ -295,6 +294,7 @@ static int IPOnlyCIDRItemParseSingle(IPOnlyCIDRItem **pdd, const char *str)
                     goto error;
 
                 dd->netmask = (uint8_t)cidr;
+                netmask = CIDRGet(cidr);
             }
 
             r = inet_pton(AF_INET, ip, &in);

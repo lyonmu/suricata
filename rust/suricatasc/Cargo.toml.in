@@ -1,8 +1,9 @@
 [package]
 name = "suricatasc"
-version = "@PACKAGE_VERSION@"
-edition = "2021"
-license = "GPL-2.0-only"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Suricata socket control program"
 readme = "README.md"
 
@@ -10,9 +11,7 @@ readme = "README.md"
 name = "suricatasc"
 
 [dependencies]
-clap = { version = "=4.5.57", default-features = false, features = ["std", "derive", "help", "usage"] }
-
-once_cell = { version = "1.21.3" }
+clap.workspace = true
 
 # Held at 14 to support Rust 1.75.0.
 rustyline = { version = "14.0.0" }
@@ -20,8 +19,8 @@ rustyline-derive = { version = "~0.11.1" }
 
 thiserror = { version = "1.0.69" }
 
-serde = { version = "1.0.219", default-features = false, features = ["derive"] }
-serde_json = { version = "1.0.140", default-features = false, features = ["preserve_order"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 # Pinned back to support Rust 1.75.0. Not used directly by us, but by rustyline.
 home = { version = "=0.5.9" }

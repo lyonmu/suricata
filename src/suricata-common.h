@@ -125,6 +125,12 @@ extern "C"
 #include <ctype.h>
 #endif
 
+#if HAVE_MEMMOVE_S
+#ifndef __STDC_WANT_LIB_EXT1__
+#define __STDC_WANT_LIB_EXT1__ 1
+#endif
+#endif
+
 #if HAVE_STRING_H
 #include <string.h>
 #endif
@@ -174,16 +180,7 @@ typedef unsigned char u_char;
 
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
-#else
-#ifdef OS_WIN32
-#include "win32-syslog.h"
-#endif /* OS_WIN32 */
 #endif /* HAVE_SYSLOG_H */
-
-#ifdef OS_WIN32
-#include "win32-misc.h"
-#include "win32-service.h"
-#endif /* OS_WIN32 */
 
 #if HAVE_SYS_TIME_H
 #include <sys/time.h>
@@ -533,13 +530,10 @@ typedef struct lua_State lua_State;
 #include "util-optimize.h"
 #include "util-time.h"
 #include "util-mem.h"
-#include "util-memcmp.h"
 #include "util-atomic.h"
+#ifdef UNITTESTS
 #include "util-unittest.h"
-
-// pseudo system headers
-#include "queue.h"
-#include "tree.h"
+#endif
 
 #ifndef HAVE_STRLCAT
 size_t strlcat(char *, const char *src, size_t siz);

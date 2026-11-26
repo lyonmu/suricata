@@ -43,9 +43,7 @@
 #include "stream-tcp-private.h"
 
 #include "util-debug.h"
-#include "util-time.h"
 #include "util-error.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #if defined(UNITTESTS) || defined(FUZZ)

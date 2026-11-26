@@ -24,7 +24,7 @@
 static const char ntp_tx[] = "suricata:ntp:tx";
 
 struct LuaTx {
-    NTPTransaction *tx;
+    SCLuaTxRef ref;
 };
 
 static int LuaNtpGetTx(lua_State *L)
@@ -32,15 +32,15 @@ static int LuaNtpGetTx(lua_State *L)
     if (!(LuaStateNeedProto(L, ALPROTO_NTP))) {
         return LuaCallbackError(L, "error: protocol not ntp");
     }
-    NTPTransaction *tx = LuaStateGetTX(L);
+    void *tx = LuaStateGetTX(L);
     if (tx == NULL) {
         return LuaCallbackError(L, "error: no tx available");
     }
-    struct LuaTx *ltx = (struct LuaTx *)lua_newuserdata(L, sizeof(*ltx));
+    struct LuaTx *ltx = SCLuaNewUserData(L, SCLUA_TUD_NTP_TX, sizeof(*ltx));
     if (ltx == NULL) {
         return LuaCallbackError(L, "error: fail to allocate user data");
     }
-    ltx->tx = tx;
+    SCLuaTxRefInit(L, &ltx->ref, LuaStateGetTxId(L));
 
     luaL_getmetatable(L, ntp_tx);
     lua_setmetatable(L, -2);
@@ -50,42 +50,46 @@ static int LuaNtpGetTx(lua_State *L)
 
 static int LuaNtpTxGetVersion(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, ntp_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, ntp_tx, SCLUA_TUD_NTP_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCNtpLuaGetVersion(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCNtpLuaGetVersion(L, txptr);
 }
 
 static int LuaNtpTxGetMode(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, ntp_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, ntp_tx, SCLUA_TUD_NTP_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCNtpLuaGetMode(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCNtpLuaGetMode(L, txptr);
 }
 
 static int LuaNtpTxGetStratum(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, ntp_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, ntp_tx, SCLUA_TUD_NTP_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCNtpLuaGetStratum(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCNtpLuaGetStratum(L, txptr);
 }
 
 static int LuaNtpTxGetReferenceId(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, ntp_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, ntp_tx, SCLUA_TUD_NTP_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCNtpLuaGetReferenceId(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCNtpLuaGetReferenceId(L, txptr);
 }
 
 static const struct luaL_Reg txlib[] = {

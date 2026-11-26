@@ -17,15 +17,21 @@
 
 use super::http2::HTTP2_COMPRESSION_BOMB_LIMIT;
 use crate::direction::Direction;
-use brotli;
+use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HuffmanCode};
 use flate2::read::{DeflateDecoder, GzDecoder};
 use std;
 use std::io;
-use std::io::{Cursor, Read, Write};
+use std::io::{BufReader, Cursor, Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use zstd;
 
 pub const HTTP2_DECOMPRESSION_CHUNK_SIZE: usize = 0x1000; // 4096
 
 pub(super) const DEFAULT_BOMB_RATIO: u64 = 2048;
+
+const HTTP2_BROTLI_DEFAULT_MEMCAP: usize = 256 * 1024 * 1024;
+pub(super) static HTTP2_BROTLI_MEMCAP: AtomicUsize = AtomicUsize::new(HTTP2_BROTLI_DEFAULT_MEMCAP);
+static HTTP2_BROTLI_MEMUSE: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(u8)]
 #[derive(Copy, Clone, PartialOrd, PartialEq, Eq, Debug)]
@@ -34,7 +40,8 @@ pub enum HTTP2ContentEncoding {
     Gzip = 1,
     Br = 2,
     Deflate = 3,
-    Unrecognized = 4,
+    Zstd = 4,
+    Unrecognized = 5,
 }
 
 //a cursor turning EOF into blocking errors
@@ -82,15 +89,160 @@ impl Read for HTTP2cursor {
     }
 }
 
+#[derive(Default)]
+struct HTTP2BrotliMemory<T: Clone + Default> {
+    data: Vec<T>,
+    charged: usize,
+}
+
+impl<T: Clone + Default> brotli::SliceWrapper<T> for HTTP2BrotliMemory<T> {
+    fn slice(&self) -> &[T] {
+        &self.data
+    }
+}
+
+impl<T: Clone + Default> brotli::SliceWrapperMut<T> for HTTP2BrotliMemory<T> {
+    fn slice_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+}
+
+impl<T: Clone + Default> Drop for HTTP2BrotliMemory<T> {
+    fn drop(&mut self) {
+        drop(std::mem::take(&mut self.data));
+        HTTP2_BROTLI_MEMUSE.fetch_sub(self.charged, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ScMemcapAlloc<T: Clone + Default> {
+    pub _default_value: T,
+}
+
+fn http2_brotli_reserve(size: usize) -> bool {
+    // needs MSRV 1.95 to use try_update
+    #[allow(deprecated)]
+    return HTTP2_BROTLI_MEMUSE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_add(size)
+                .filter(|total| *total <= HTTP2_BROTLI_MEMCAP.load(Ordering::Relaxed))
+        })
+        .is_ok();
+}
+
+// from private brotli_decompressor::huffman::BROTLI_HUFFMAN_MAX_TABLE_SIZE;
+const BROTLI_HUFFMAN_MAX_TABLE_SIZE: usize = 1080;
+
+#[allow(deprecated)]
+fn http2_brotli_alloc<T: Clone + Default>(len: usize, unit_size: usize) -> HTTP2BrotliMemory<T> {
+    let charged = match len.checked_mul(unit_size) {
+        Some(bytes) => bytes,
+        None => return HTTP2BrotliMemory::default(),
+    };
+    if unit_size > 4 || (unit_size == 4 && len <= 3 * BROTLI_HUFFMAN_MAX_TABLE_SIZE) {
+        // HuffmanCode or
+        // u32 unchecked allocation in brotli-decompressor-5.0.0 decode.rs:2847, 3240 entries
+        // always charge, but do not fail
+        // needs MSRV 1.95 to use try_update
+        if HTTP2_BROTLI_MEMUSE
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(charged)
+            })
+            .is_err()
+        {
+            return HTTP2BrotliMemory::default();
+        }
+    } else if charged > 0 && !http2_brotli_reserve(charged) {
+        return HTTP2BrotliMemory::default();
+    }
+    let mut data = Vec::new();
+    if data.try_reserve_exact(len).is_err() {
+        HTTP2_BROTLI_MEMUSE.fetch_sub(charged, Ordering::Relaxed);
+        return HTTP2BrotliMemory::default();
+    }
+    data.resize(len, T::default());
+    HTTP2BrotliMemory { data, charged }
+}
+
+impl<T: Clone + Default> brotli::Allocator<T> for ScMemcapAlloc<T> {
+    type AllocatedMemory = HTTP2BrotliMemory<T>;
+
+    fn alloc_cell(&mut self, len: usize) -> Self::AllocatedMemory {
+        http2_brotli_alloc(len, std::mem::size_of::<T>())
+    }
+
+    fn free_cell(&mut self, _data: Self::AllocatedMemory) {}
+}
+
+pub(super) struct BrotliDecompressor {
+    state: BrotliState<ScMemcapAlloc<u8>, ScMemcapAlloc<u32>, ScMemcapAlloc<HuffmanCode>>,
+    cursor: HTTP2cursor,
+}
+
+impl BrotliDecompressor {
+    pub fn new(cursor: HTTP2cursor) -> BrotliDecompressor {
+        BrotliDecompressor {
+            state: BrotliState::new_strict(
+                ScMemcapAlloc::<u8>::default(),
+                ScMemcapAlloc::<u32>::default(),
+                ScMemcapAlloc::<HuffmanCode>::default(),
+            ),
+            cursor,
+        }
+    }
+}
+
+// we need to implement this as flate2 and brotli crates
+// will read from this object
+impl Read for BrotliDecompressor {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let start_offset = 0;
+        let mut output_offset = 0;
+        let mut available_out = buf.len() - output_offset;
+        let mut input_offset = self.cursor.cursor.position() as usize;
+        let mut available_in = self.cursor.cursor.get_ref().len() - input_offset;
+        let mut written = 0;
+        match BrotliDecompressStream(
+            &mut available_in,
+            &mut input_offset,
+            self.cursor.cursor.get_mut(),
+            &mut available_out,
+            &mut output_offset,
+            buf,
+            &mut written,
+            &mut self.state,
+        ) {
+            BrotliResult::ResultSuccess => {
+                self.cursor.cursor.set_position(input_offset as u64);
+                return Ok(output_offset - start_offset);
+            }
+            BrotliResult::NeedsMoreInput => {
+                self.cursor.cursor.set_position(input_offset as u64);
+                return Ok(output_offset - start_offset);
+            }
+            BrotliResult::NeedsMoreOutput => {
+                self.cursor.cursor.set_position(input_offset as u64);
+                return Ok(output_offset - start_offset);
+            }
+            BrotliResult::ResultFailure => {
+                return Err(io::Error::other("Brotli decompression failed"));
+            }
+        }
+    }
+}
+
 pub enum HTTP2Decompresser {
     Unassigned,
     // Box because large.
     Gzip(Box<GzDecoder<HTTP2cursor>>),
     // Box because large.
-    Brotli(Box<brotli::Decompressor<HTTP2cursor>>),
+    Brotli(Box<BrotliDecompressor>),
     // This one is not so large, at 88 bytes as of doing this, but box
     // for consistency.
     Deflate(Box<DeflateDecoder<HTTP2cursor>>),
+
+    // usage of 'static, alternative could be trait instead of enum
+    Zstd(Box<zstd::stream::read::Decoder<'static, BufReader<HTTP2cursor>>>),
 }
 
 impl std::fmt::Debug for HTTP2Decompresser {
@@ -100,6 +252,7 @@ impl std::fmt::Debug for HTTP2Decompresser {
             HTTP2Decompresser::Gzip(_) => write!(f, "GZIP"),
             HTTP2Decompresser::Brotli(_) => write!(f, "BROTLI"),
             HTTP2Decompresser::Deflate(_) => write!(f, "DEFLATE"),
+            HTTP2Decompresser::Zstd(_) => write!(f, "ZSTD"),
         }
     }
 }
@@ -128,9 +281,15 @@ impl GetMutCursor for DeflateDecoder<HTTP2cursor> {
     }
 }
 
-impl GetMutCursor for brotli::Decompressor<HTTP2cursor> {
+impl GetMutCursor for BrotliDecompressor {
     fn get_mut(&mut self) -> &mut HTTP2cursor {
-        return self.get_mut();
+        return &mut self.cursor;
+    }
+}
+
+impl GetMutCursor for zstd::stream::read::Decoder<'_, BufReader<HTTP2cursor>> {
+    fn get_mut(&mut self) -> &mut HTTP2cursor {
+        return self.get_mut().get_mut();
     }
 }
 
@@ -199,10 +358,22 @@ impl HTTP2DecoderHalf {
                     HTTP2Decompresser::Deflate(Box::new(DeflateDecoder::new(HTTP2cursor::new())));
             } else if input.eq_ignore_ascii_case(b"br") {
                 self.encoding = HTTP2ContentEncoding::Br;
-                self.decoder = HTTP2Decompresser::Brotli(Box::new(brotli::Decompressor::new(
+                self.decoder = HTTP2Decompresser::Brotli(Box::new(BrotliDecompressor::new(
                     HTTP2cursor::new(),
-                    HTTP2_DECOMPRESSION_CHUNK_SIZE,
                 )));
+            } else if input.eq_ignore_ascii_case(b"zstd") {
+                self.encoding = HTTP2ContentEncoding::Zstd;
+                if let Ok(mut z) = zstd::stream::read::Decoder::new(HTTP2cursor::new()) {
+                    if z.window_log_max(23).is_ok() {
+                        self.decoder = HTTP2Decompresser::Zstd(Box::new(z));
+                    } else {
+                        SCLogWarning!("Failed to set zstd window log max");
+                        self.decoder = HTTP2Decompresser::Unassigned;
+                    }
+                } else {
+                    SCLogWarning!("Failed to create zstd decoder");
+                    self.decoder = HTTP2Decompresser::Unassigned;
+                }
             } else {
                 self.encoding = HTTP2ContentEncoding::Unrecognized;
             }
@@ -228,6 +399,19 @@ impl HTTP2DecoderHalf {
             }
             HTTP2Decompresser::Brotli(ref mut br_decoder) => {
                 let r = http2_decompress(&mut *br_decoder.as_mut(), input, output);
+                match r {
+                    Err(_) => {
+                        self.decoder = HTTP2Decompresser::Unassigned;
+                    }
+                    Ok(o) => {
+                        self.output_len += o.len() as u64;
+                    }
+                }
+                self.input_len += input.len() as u64;
+                return r;
+            }
+            HTTP2Decompresser::Zstd(ref mut zstd_decoder) => {
+                let r = http2_decompress(&mut *zstd_decoder.as_mut(), input, output);
                 match r {
                     Err(_) => {
                         self.decoder = HTTP2Decompresser::Unassigned;

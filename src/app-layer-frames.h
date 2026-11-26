@@ -24,6 +24,12 @@
 #ifndef SURICATA_APP_LAYER_FRAMES_H
 #define SURICATA_APP_LAYER_FRAMES_H
 
+#include "app-layer-protos.h"
+
+typedef struct Flow_ Flow;
+typedef struct Packet_ Packet;
+typedef struct StreamSlice StreamSlice;
+
 /** special value for matching any type */
 #define FRAME_ANY_TYPE 62
 /** max 63 to fit the 64 bit per protocol space */

@@ -21,13 +21,8 @@
  * \author Anoop Saldanha <anoopsaldanha@gmail.com>
  */
 
-#include "suricata.h"
 #include "suricata-common.h"
-#include "decode.h"
 
-#include "stream-tcp.h"
-
-#include "app-layer.h"
 #include "app-layer-detect-proto.h"
 #include "app-layer-protos.h"
 #include "app-layer-parser.h"
@@ -39,21 +34,20 @@
 #include "util-mpm.h"
 #include "util-debug.h"
 #include "util-byte.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-memcmp.h"
-#include "flow-util.h"
 
-#include "detect-engine.h"
 #include "detect-engine-state.h"
-#include "detect-engine-build.h"
-#include "detect-parse.h"
 
 #include "conf.h"
 
-#include "util-mem.h"
 #include "util-misc.h"
 #include "util-validate.h"
+#include "detect.h"
+#include "flow.h"
+#include "rust.h"
+#include "stream-tcp-reassemble.h"
+#include "util-prefilter.h"
 
 /* content-limit default value */
 #define FILEDATA_CONTENT_LIMIT 100000
@@ -555,7 +549,7 @@ static void SMTPSetEvent(SMTPState *s, uint8_t e)
 
 static SMTPTransaction *SMTPTransactionCreate(SMTPState *state)
 {
-    if (state->tx_cnt > smtp_config.max_tx) {
+    if (state->nb_live_tx >= smtp_config.max_tx) {
         return NULL;
     }
     SMTPTransaction *tx = SCCalloc(1, sizeof(*tx));
@@ -929,8 +923,9 @@ static int SMTPProcessCommandDATA(
                                 state->file_track_id++, filename, filename_len, NULL, 0,
                                 flags) != 0) {
                         SCLogDebug("FileOpenFile() failed");
+                    } else {
+                        SMTPNewFile(state->curr_tx, tx->files_ts.tail);
                     }
-                    SMTPNewFile(state->curr_tx, tx->files_ts.tail);
                     break;
                 case MimeSmtpFileChunk:
                     // rust already run FileAppendData
@@ -1086,8 +1081,20 @@ static int SMTPProcessReply(
             SMTPSetEvent(state, SMTP_DECODER_EVENT_DATA_COMMAND_REJECTED);
         }
     } else if (IsReplyToCommand(state, SMTP_COMMAND_BDAT)) {
+        if ((state->parser_state & SMTP_PARSER_STATE_COMMAND_DATA_MODE) &&
+                state->current_command == SMTP_COMMAND_BDAT &&
+                state->cmds_idx + 1 == state->cmds_cnt) {
+            // The server replied before receiving the entire chunk.
+            state->parser_state &= ~SMTP_PARSER_STATE_COMMAND_DATA_MODE;
+        }
         SMTPSetProgressTC(reply_tx, SMTP_RESPONSE_DATA);
     } else if (IsReplyToCommand(state, SMTP_COMMAND_BDAT_LAST)) {
+        if ((state->parser_state & SMTP_PARSER_STATE_COMMAND_DATA_MODE) &&
+                state->current_command == SMTP_COMMAND_BDAT_LAST &&
+                state->cmds_idx + 1 == state->cmds_cnt) {
+            // The server replied before receiving the entire chunk.
+            state->parser_state &= ~SMTP_PARSER_STATE_COMMAND_DATA_MODE;
+        }
         if (reply_tx && !(state->parser_state & SMTP_PARSER_STATE_PARSING_MULTILINE_REPLY)) {
             SMTPTransactionCompleteTC(reply_tx);
         }
@@ -1326,6 +1333,7 @@ static int SMTPProcessRequest(
             return -1;
         state->curr_tx = tx;
         TAILQ_INSERT_TAIL(&state->tx_list, tx, next);
+        state->nb_live_tx++;
         tx->tx_id = state->tx_cnt++;
 
         /* keep track of the start of the tx */
@@ -2002,6 +2010,7 @@ static void SMTPStateTransactionFree (void *state, uint64_t tx_id)
         if (tx == smtp_state->curr_tx)
             smtp_state->curr_tx = NULL;
         TAILQ_REMOVE(&smtp_state->tx_list, tx, next);
+        smtp_state->nb_live_tx--;
         SMTPTransactionFree(tx, state);
         break;
     }
@@ -2180,6 +2189,14 @@ void SMTPParserCleanup(void)
 
 #ifdef UNITTESTS
 #include "detect-engine-alert.h"
+#include "counters.h"
+#include "decode.h"
+#include "detect-engine.h"
+#include "detect-engine-build.h"
+#include "detect-parse.h"
+#include "flow-util.h"
+#include "stream-tcp.h"
+#include "suricata.h"
 
 static void SMTPTestInitConfig(void)
 {

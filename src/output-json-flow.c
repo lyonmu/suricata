@@ -34,7 +34,6 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
-#include "util-unittest.h"
 
 #include "util-debug.h"
 
@@ -44,7 +43,6 @@
 #include "util-device-private.h"
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
-#include "util-time.h"
 #include "output-json.h"
 #include "output-json-flow.h"
 
@@ -155,6 +153,9 @@ static SCJsonBuilder *CreateEveHeaderFromFlow(const Flow *f, OutputJsonCommonSet
         SCJbSetUint(jb, "ip_v", 6);
     }
 
+    if (f->tunnel_id > 0 && f->tunnel_id != PKT_TUNNEL_UNKNOWN) {
+        SCJbSetUint(jb, "tunnel_id", f->tunnel_id);
+    }
     if (SCProtoNameValid(f->proto)) {
         SCJbSetString(jb, "proto", known_proto[f->proto]);
     } else {

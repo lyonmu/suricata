@@ -400,10 +400,14 @@ impl ConnectionParser {
                 let (len, ext) = parse_chunked_length(&data2)?;
                 self.request_chunked_length = len;
                 if ext {
-                    htp_warn!(
+                    let mut flags = 0; // unused but needed by macro
+                    htp_warn_once!(
                         self.logger,
                         HtpLogCode::REQUEST_CHUNK_EXTENSION,
-                        "Request chunk extension"
+                        "Request chunk extension",
+                        self.request_mut().unwrap().flags,
+                        flags,
+                        HtpFlags::FIELD_REQ_CHUNK_EXTENSION
                     );
                 }
                 let len = len.as_ref().ok_or(HtpStatus::ERROR).map_err(|e| {
@@ -1044,6 +1048,7 @@ impl ConnectionParser {
             | HtpContentEncoding::Deflate
             | HtpContentEncoding::Zlib
             | HtpContentEncoding::Brotli
+            | HtpContentEncoding::Zstd
             | HtpContentEncoding::Lzma => {
                 // Send data buffer to the decompressor if it exists
                 if req.request_decompressor.is_none() && data.is_none() {
@@ -1130,6 +1135,8 @@ impl ConnectionParser {
                 HtpContentEncoding::Brotli
             } else if ce.cmp_nocase_nozero(b"lzma") {
                 HtpContentEncoding::Lzma
+            } else if ce.cmp_nocase_nozero(b"zstd") {
+                HtpContentEncoding::Zstd
             } else if ce.cmp_nocase_nozero(b"inflate") || ce.cmp_nocase_nozero(b"none") {
                 HtpContentEncoding::None
             } else {
@@ -1158,6 +1165,7 @@ impl ConnectionParser {
             | HtpContentEncoding::Deflate
             | HtpContentEncoding::Zlib
             | HtpContentEncoding::Brotli
+            | HtpContentEncoding::Zstd
             | HtpContentEncoding::Lzma => {
                 self.request_prepend_decompressor(request_content_encoding_processing)?;
             }
@@ -1245,6 +1253,9 @@ impl ConnectionParser {
         let compression_options = self.cfg.compression_options;
         if self.bombs >= compression_options.get_max_bombs() {
             // skip decompression for this flow if too many bombs were seen
+            self.request_mut()
+                .unwrap()
+                .request_content_encoding_processing = HtpContentEncoding::None;
             return Ok(());
         }
         if encoding != HtpContentEncoding::None {

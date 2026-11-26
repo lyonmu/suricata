@@ -49,7 +49,6 @@
 
 #include "util-debug.h"
 #include "util-spm-bm.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-file-decompression.h"
 #include "util-profiling.h"
@@ -60,7 +59,6 @@ static void DetectFiledataRegisterTests(void);
 #endif
 static void DetectFiledataSetupCallback(
         const DetectEngineCtx *de_ctx, Signature *s, const DetectBufferType *map);
-static int g_file_data_buffer_id = 0;
 
 /* file API */
 int PrefilterMpmFiledataRegister(DetectEngineCtx *de_ctx, SigGroupHead *sgh, MpmCtx *mpm_ctx,
@@ -172,8 +170,6 @@ void DetectFiledataRegister(void)
 
     DetectBufferTypeSetDescriptionByName("file_data", "data from tracked files");
     DetectBufferTypeSupportsMultiInstance("file_data");
-
-    g_file_data_buffer_id = DetectBufferTypeGetByName("file_data");
 }
 
 static void SetupDetectEngineConfig(DetectEngineCtx *de_ctx) {
@@ -497,13 +493,14 @@ uint8_t DetectEngineInspectFiledata(DetectEngineCtx *de_ctx, DetectEngineThreadC
     if (ffc == NULL) {
         return DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILES;
     }
+    const bool eof =
+            (AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags) > engine->progress);
     if (ffc->head == NULL) {
-        const bool eof = (AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags) >
-                          engine->progress);
         if (eof && engine->match_on_null) {
             return DETECT_ENGINE_INSPECT_SIG_MATCH;
         }
-        return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+        return eof ? DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILES
+                   : DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
     }
 
     int local_file_id = 0;
@@ -516,8 +513,8 @@ uint8_t DetectEngineInspectFiledata(DetectEngineCtx *de_ctx, DetectEngineThreadC
             continue;
         }
 
-        bool eof = (file->state == FILE_STATE_CLOSED);
-        uint8_t ciflags = eof ? DETECT_CI_FLAGS_END : 0;
+        bool file_done = (file->state == FILE_STATE_CLOSED);
+        uint8_t ciflags = file_done ? DETECT_CI_FLAGS_END : 0;
         if (buffer->inspect_offset == 0)
             ciflags |= DETECT_CI_FLAGS_START;
 
@@ -530,6 +527,11 @@ uint8_t DetectEngineInspectFiledata(DetectEngineCtx *de_ctx, DetectEngineThreadC
         local_file_id++;
     }
 
+    /* Only definitive once the tx moved past the engine's progress: a new file
+     * may still be added to the tx while it is in progress. */
+    if (eof) {
+        return DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILES;
+    }
     return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
 }
 

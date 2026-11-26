@@ -37,7 +37,7 @@ env:
   # could cause some steps to fail.
   #
   # Update this whenever we fix clippy issues due to a newer version of Rust.
-  RUST_VERSION_KNOWN: "1.98.0"
+  RUST_VERSION_KNOWN: "1.99.0"
 
 jobs:
 
@@ -147,7 +147,7 @@ jobs:
       - uses: ./.github/actions/install-cbindgen
       # Download and extract dependency archives created during prep
       # job.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -346,7 +346,7 @@ jobs:
       - uses: ./.github/actions/install-cbindgen
       # Download and extract dependency archives created during prep
       # job.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -541,7 +541,7 @@ jobs:
 
       # Download and extract dependency archives created during prep
       # job.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -584,7 +584,7 @@ jobs:
           key: cargo-registry
 
       - name: Download Suricata distribution archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
 
@@ -709,7 +709,7 @@ jobs:
 
       # Download and extract dependency archives created during prep
       # job.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -782,7 +782,7 @@ jobs:
                 which \
                 zlib-devel
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
 
@@ -811,7 +811,7 @@ jobs:
           test -e /usr/local/lib/suricata/python/suricata/update/configs/modify.conf
           test -e /usr/local/lib/suricata/python/suricata/update/configs/threshold.in
           test -e /usr/local/lib/suricata/python/suricata/update/configs/update.yaml
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -891,7 +891,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/install-cbindgen
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -920,7 +920,7 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: false
           files: coverage.lcov
@@ -989,7 +989,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/install-cbindgen
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1086,7 +1086,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
       - uses: ./.github/actions/install-cbindgen
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1119,6 +1119,38 @@ jobs:
       - run: make install
       - run: suricata-update -V
       - run: suricatasc -h
+
+  # Build both C and Rust with AddressSanitizer, then run Suricata-Verify.
+  fedora-44-rust-asan:
+    name: Fedora 44 (rust-asan, sv)
+    runs-on: ubuntu-latest
+    container: fedora:44
+    needs: [prepare-deps]
+    steps:
+      - name: Cache cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cargo/registry
+          key: ${{ github.job }}-cargo-registry
+      - run: dnf -y install git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: prep
+          path: prep
+      - run: tar xf prep/suricata-update.tar.gz
+      - run: tar xf prep/suricata-verify.tar.gz
+      - name: Build and test with Rust ASAN
+        run: ./qa/ci/rust-asan.sh
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rust-asan-logs
+          if-no-files-found: ignore
+          path: |
+            *.log
+            suricata-verify/tests/**/output/
 
   # This job builds and tests Suricata as a non-root user as some
   # issues only show up when not running as root, and by default all
@@ -1176,7 +1208,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/install-cbindgen
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1275,7 +1307,7 @@ jobs:
                 zlib-devel
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1305,7 +1337,7 @@ jobs:
         run: echo CPUS=$(nproc --all) >> $GITHUB_ENV
 
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xf suricata-*.tar.gz --strip-components=1
@@ -1385,7 +1417,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1463,7 +1495,7 @@ jobs:
                 zlib1g-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1540,7 +1572,7 @@ jobs:
                 dpdk-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1633,7 +1665,7 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: false
           files: coverage.lcov
@@ -1708,7 +1740,7 @@ jobs:
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1746,18 +1778,18 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: false
           files: coverage.lcov
           flags: pcap
 
   ubuntu-24-04-cov-afpdpdk:
-    name: Ubuntu 24.04 (afpacket and dpdk coverage)
+    name: Ubuntu 24.04 (afpacket and dpdk coverage, svlive)
     runs-on: ubuntu-latest
     container:
       image: ubuntu:24.04
-      options: --privileged
+      options: --privileged --cgroupns=host
     needs: [prepare-deps, prepare-cbindgen]
     steps:
       - name: Cache ~/.cargo
@@ -1814,16 +1846,24 @@ jobs:
                 curl \
                 time \
                 wget \
-                dpdk-dev
+                dpdk-dev \
+                podman \
+                hping3 \
+                tcpdump \
+                tcpreplay \
+                ethtool \
+                iproute2 \
+                iptables
       # specific version to match up to the llvm version in ubuntu below
       - name: Install Rust
         run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.85.1 -y
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
+      - run: tar xf prep/suricata-verify.tar.gz
       - uses: ./.github/actions/install-cbindgen
       - name: Fix kernel mmap rnd bits
       # Asan in llvm 14 provided in ubuntu 22.04 is incompatible with
@@ -1889,6 +1929,21 @@ jobs:
           ./qa/live/multi-tenant.sh "autofp"
         env:
           LLVM_PROFILE_FILE: "/tmp/mt-autofp.profraw"
+      - name: Run suricata-verify live tests
+        id: sv_live
+        run: ASAN_OPTIONS=detect_leaks=0 python3 ./suricata-verify/live/run.py
+        env:
+          LLVM_PROFILE_FILE: "/tmp/sv-live-afpdpdk-%p-%m.profraw"
+      - name: Upload failed suricata-verify live test outputs
+        if: ${{ failure() && steps.sv_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sv-live-output-${{ github.job }}
+          path: |
+            suricata-verify/live/tests/**/output/**
+            !suricata-verify/live/tests/**/output/*.socket
+            !suricata-verify/live/tests/**/output/sur
+          if-no-files-found: ignore
       - run: llvm-profdata-19 merge -o default.profdata $(find /tmp/ -name '*.profraw')
       - run: llvm-cov-19 export ./src/suricata -instr-profile=default.profdata -format=lcov --ignore-filename-regex="^/(root|usr|rustc|github)/.*" --skip-branches > coverage.lcov
       - name: Upload coverage.lcov artifact
@@ -1897,7 +1952,7 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: false
           files: coverage.lcov
@@ -1972,7 +2027,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -1994,12 +2049,12 @@ jobs:
           ./qa/unix.sh "suricata-verify/"
 
   ubuntu-latest-namespace-ips:
-    name: Ubuntu 24.04 (afpacket IPS tests in namespaces)
+    name: Ubuntu 24.04 (afpacket IPS tests in namespaces, svlive)
     runs-on: ubuntu-latest
     needs: [prepare-deps, prepare-cbindgen]
     container:
       image: ubuntu:24.04
-      options: --privileged
+      options: --privileged --cgroupns=host
     steps:
       - name: Cache ~/.cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -2046,6 +2101,7 @@ jobs:
                 libevent-pthreads-2.1-7 \
                 make \
                 parallel \
+                podman \
                 python3-yaml \
                 software-properties-common \
                 sudo \
@@ -2060,12 +2116,15 @@ jobs:
                 ethtool \
                 iproute2 \
                 iptables \
+                tcpdump \
+                tcpreplay \
                 tshark
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
+      - run: tar xf prep/suricata-verify.tar.gz
       # packaged Rust version is too old for coverage, so get from rustup. 1.85.1 matches
       # LLVM 19
       - name: Install Rust
@@ -2135,7 +2194,24 @@ jobs:
           LLVM_PROFILE_FILE: "/tmp/afp-fw-netns-bridge.profraw"
       - run: llvm-profdata-19 merge -o afp-fw-netns-bridge.profdata /tmp/afp-fw-netns-bridge.profraw
 
-      - run: llvm-profdata-19 merge -o combined.profdata afp-ips.profdata nfq-ips.profdata afp-ips-autofp.profdata nfq-ips-workers.profdata afp-ips-bond1.profdata afp-ips-bond2.profdata afp-fw-netns-bridge.profdata nfq-fw-netns-route.profdata
+      - name: Run suricata-verify live tests
+        id: sv_live
+        run: ASAN_OPTIONS=detect_leaks=0 python3 ./suricata-verify/live/run.py
+        env:
+          LLVM_PROFILE_FILE: "/tmp/sv-live-%p-%m.profraw"
+      - name: Upload failed suricata-verify live test outputs
+        if: ${{ failure() && steps.sv_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sv-live-output-${{ github.job }}
+          path: |
+            suricata-verify/live/tests/**/output/**
+            !suricata-verify/live/tests/**/output/*.socket
+            !suricata-verify/live/tests/**/output/sur
+          if-no-files-found: ignore
+      - run: llvm-profdata-19 merge -o sv-live.profdata /tmp/sv-live-*.profraw
+
+      - run: llvm-profdata-19 merge -o combined.profdata afp-ips.profdata nfq-ips.profdata afp-ips-autofp.profdata nfq-ips-workers.profdata afp-ips-bond1.profdata afp-ips-bond2.profdata afp-fw-netns-bridge.profdata nfq-fw-netns-route.profdata sv-live.profdata
       - run: llvm-cov-19 export ./src/suricata -instr-profile=combined.profdata -format=lcov --ignore-filename-regex="^(/github/home/.cargo/.*|/usr/.*|/rustc/.*)" --skip-branches > coverage.lcov
       - name: Upload coverage.lcov artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -2143,7 +2219,7 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: true
           files: coverage.lcov
@@ -2151,11 +2227,11 @@ jobs:
           verbose: true
 
   ubuntu-24-04-asan-afpdpdk:
-    name: Ubuntu 24.04 (afpacket and dpdk live tests with ASAN)
+    name: Ubuntu 24.04 (afpacket and dpdk live tests with ASAN, svlive)
     runs-on: ubuntu-latest
     container:
       image: ubuntu:24.04
-      options: --privileged
+      options: --privileged --cgroupns=host
     needs: [prepare-deps, prepare-cbindgen]
     env:
       RV: "1.89"
@@ -2180,9 +2256,16 @@ jobs:
                 cargo-${RV} \
                 cbindgen \
                 clang-18 \
+                ethtool \
+                podman \
+                hping3 \
+                tcpdump \
+                tcpreplay \
                 git \
                 hwloc \
                 libhwloc-dev \
+                iproute2 \
+                iptables \
                 jq \
                 inetutils-ping \
                 libc++-dev \
@@ -2220,10 +2303,11 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
+      - run: tar xf prep/suricata-verify.tar.gz
       - name: Fix kernel mmap rnd bits
         run: sudo sysctl vm.mmap_rnd_bits=28
       - run: ./autogen.sh
@@ -2259,6 +2343,19 @@ jobs:
           ./qa/live/pcap.sh "single"
       - run: |
           ./qa/live/multi-tenant.sh "autofp"
+      - name: Run suricata-verify live tests
+        id: sv_live
+        run: ASAN_OPTIONS=detect_leaks=0 python3 ./suricata-verify/live/run.py
+      - name: Upload failed suricata-verify live test outputs
+        if: ${{ failure() && steps.sv_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sv-live-output-${{ github.job }}
+          path: |
+            suricata-verify/live/tests/**/output/**
+            !suricata-verify/live/tests/**/output/*.socket
+            !suricata-verify/live/tests/**/output/sur
+          if-no-files-found: ignore
 
   ubuntu-24-04-cov-fuzz:
     name: Ubuntu 24.04 (fuzz corpus coverage)
@@ -2327,7 +2424,7 @@ jobs:
         run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.85.1 -y
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -2363,7 +2460,7 @@ jobs:
           name: coverage-lcov-${{ github.job }}
           path: coverage.lcov
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           fail_ci_if_error: false
           files: coverage.lcov
@@ -2427,7 +2524,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -2508,7 +2605,7 @@ jobs:
       - run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.62.0 -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar zxvf suricata-*.tar.gz --strip-components=1
@@ -2582,7 +2679,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -2663,7 +2760,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin:$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -2760,15 +2857,16 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - uses: ./.github/actions/install-cbindgen
       - run: ./autogen.sh
-      - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-netmap --enable-debug
+      - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-netmap --enable-debug --enable-unittests
       - run: make -j ${{ env.CPUS }}
       - run: ./src/suricata --build-info | grep -E "Netmap support:\s+yes"
+      - run: ./src/suricata -u -U Netmap
 
   ubuntu-22-04-minimal-recommended-build:
     name: Ubuntu 22.04 (Minimal/Recommended Build)
@@ -2787,7 +2885,7 @@ jobs:
         run: echo CPUS=$(nproc --all) >> $GITHUB_ENV
 
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xvf suricata-*.tar.gz --strip-components=1
@@ -2823,7 +2921,7 @@ jobs:
         run: echo CPUS=$(nproc --all) >> $GITHUB_ENV
 
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xvf suricata-*.tar.gz --strip-components=1
@@ -2839,9 +2937,11 @@ jobs:
       - run: ./src/suricata --build-info # check if we can run Suricata
 
   ubuntu-22-04-dpdk-build:
-    name: Ubuntu 22.04 (DPDK Build)
+    name: Ubuntu 22.04 (DPDK Build, svlive)
     runs-on: ubuntu-22.04
-    container: ubuntu:22.04
+    container:
+      image: ubuntu:22.04
+      options: --privileged --cgroupns=host
     needs: [ prepare-deps, prepare-cbindgen ]
     strategy:
       matrix:
@@ -2869,8 +2969,17 @@ jobs:
                 autoconf \
                 automake \
                 cargo-${RV} \
+                ethtool \
                 git \
+                hping3 \
+                tcpdump \
+                tcpreplay \
                 hwloc \
+                inetutils-ping \
+                iproute2 \
+                iptables \
+                podman \
+                procps \
                 libhwloc-dev \
                 jq \
                 libtool \
@@ -2927,11 +3036,12 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - uses: ./.github/actions/install-cbindgen
+      - run: tar xf prep/suricata-verify.tar.gz
       - run: ./autogen.sh
       - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-dpdk --enable-hwloc
       - run: make -j ${{ env.CPUS }}
@@ -2944,6 +3054,19 @@ jobs:
           ./qa/live/dpdk.sh "qa/live/dpdk/suricata-null-ips.yaml"
       # DPDK configuration checks
       - run: ./qa/live/dpdk/dpdk-testsuite.sh
+      - name: Run suricata-verify live tests
+        id: sv_live
+        run: ASAN_OPTIONS=detect_leaks=0 python3 ./suricata-verify/live/run.py dpdk
+      - name: Upload failed suricata-verify live test outputs
+        if: ${{ failure() && steps.sv_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sv-live-output-${{ github.job }}-${{ matrix.dpdk_version }}
+          path: |
+            suricata-verify/live/tests/**/output/**
+            !suricata-verify/live/tests/**/output/*.socket
+            !suricata-verify/live/tests/**/output/sur
+          if-no-files-found: ignore
 
   debian-12:
     name: Debian 12 (xdp)
@@ -3009,12 +3132,12 @@ jobs:
               libxdp-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - name: Install Rust
-        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $(grep rust-version rust/Cargo.toml.in|sed 's/\"//g'|awk '{print $3}') -y
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $(awk -F '"' '/^rust-version *=/ { print $2 }' rust/Cargo.toml.in) -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: ./.github/actions/install-cbindgen
       - run: tar xf prep/suricata-update.tar.gz
@@ -3039,9 +3162,11 @@ jobs:
       - run: suricatasc -h
 
   debian-13:
-    name: Debian 13 (xdp)
+    name: Debian 13 (xdp, svlive)
     runs-on: ubuntu-latest
-    container: debian:13
+    container:
+      image: debian:13
+      options: --privileged --cgroupns=host
     needs: [prepare-deps]
     steps:
       # Cache Rust stuff.
@@ -3098,10 +3223,20 @@ jobs:
               zlib1g \
               zlib1g-dev \
               clang \
-              libxdp-dev
+              libxdp-dev \
+              podman \
+              hping3 \
+              tcpdump \
+              tcpreplay \
+              ethtool \
+              iproute2 \
+              iptables \
+              iputils-ping \
+              curl \
+              wget
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -3111,6 +3246,19 @@ jobs:
       - run: ./autogen.sh
       - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-unittests --enable-qa-simulation --enable-ebpf --enable-ebpf-build
       - run: make -j ${{ env.CPUS }}
+      - name: Run suricata-verify live tests
+        id: sv_live
+        run: python3 ./suricata-verify/live/run.py
+      - name: Upload failed suricata-verify live test outputs
+        if: ${{ failure() && steps.sv_live.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sv-live-output-${{ github.job }}
+          path: |
+            suricata-verify/live/tests/**/output/**
+            !suricata-verify/live/tests/**/output/*.socket
+            !suricata-verify/live/tests/**/output/sur
+          if-no-files-found: ignore
       - run: make check
         # -j2 caused random failures during cargo vendor
       - run: make distcheck
@@ -3118,6 +3266,7 @@ jobs:
           DISTCHECK_CONFIGURE_FLAGS: "--enable-unittests --enable-debug --enable-geoip --enable-profiling --enable-profiling-locks --enable-dpdk --enable-ebpf --enable-ebpf-build"
       - run: python3 scripts/check-dist-rules.py
       - run: python3 scripts/check-uint-keywords.py
+      - run: python3 scripts/check-enum-uint-keywords.py
       - run: test -e doc/userguide/suricata.1
       - run: test -e doc/userguide/userguide.pdf
       - name: Building Rust documentation
@@ -3125,6 +3274,8 @@ jobs:
         working-directory: rust
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q --debug-failed
+      - name: Running suricata-verify replay tests
+        run: python3 ./suricata-verify/run.py --replay --debug-failed
       - run: make install
       - run: suricata-update -V
       - run: suricatasc -h
@@ -3192,7 +3343,7 @@ jobs:
       - run: echo "/usr/lib/rust-${RV}/bin" >> $GITHUB_PATH
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -3275,12 +3426,12 @@ jobs:
               zlib1g-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - name: Install Rust
-        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $(grep rust-version rust/Cargo.toml.in|sed 's/\"//g'|awk '{print $3}') -y
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $(awk -F '"' '/^rust-version *=/ { print $2 }' rust/Cargo.toml.in) -y
       - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - uses: ./.github/actions/install-cbindgen
       - run: tar xf prep/suricata-update.tar.gz
@@ -3292,79 +3443,6 @@ jobs:
       - name: Building Rust documentation
         run: make doc
         working-directory: rust
-      - name: Running suricata-verify
-        run: python3 ./suricata-verify/run.py -q --debug-failed
-      - run: make install
-      - run: suricata-update -V
-      - run: suricatasc -h
-
-  debian-11:
-    name: Debian 11
-    runs-on: ubuntu-latest
-    container: debian:11
-    needs: [prepare-deps, prepare-cbindgen]
-    steps:
-      # Cache Rust stuff.
-      - name: Cache cargo registry
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry
-
-      - name: Determine number of CPUs
-        run: echo CPUS=$(nproc --all) >> $GITHUB_ENV
-
-      - run: |
-          apt update
-          apt -y install \
-                automake \
-                autoconf \
-                build-essential \
-                ccache \
-                curl \
-                git \
-                hwloc \
-                libhwloc-dev \
-                jq \
-                libpcre2-dev \
-                libpcap-dev   \
-                libnet1-dev \
-                libyaml-0-2 \
-                libyaml-dev \
-                libcap-ng-dev \
-                libcap-ng0 \
-                libmagic-dev \
-                libjansson-dev \
-                libgeoip-dev \
-                libhiredis-dev \
-                libevent-dev \
-                libtool \
-                m4 \
-                make \
-                python3-yaml \
-                pkg-config \
-                sudo \
-                zlib1g \
-                zlib1g-dev \
-                clang \
-                libbpf-dev \
-                libelf-dev
-      - name: Install Rust
-        run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION_KNOWN -y
-      - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: prep
-          path: prep
-      - run: tar xf prep/suricata-update.tar.gz
-      - uses: ./.github/actions/install-cbindgen
-      - run: ./autogen.sh
-      - run: CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-unittests --enable-fuzztargets
-      - run: make -j ${{ env.CPUS }}
-      - run: make check
-      - run: tar xf prep/suricata-verify.tar.gz
       - name: Running suricata-verify
         run: python3 ./suricata-verify/run.py -q --debug-failed
       - run: make install
@@ -3404,7 +3482,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
       - name: Downloading prep archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -3432,48 +3510,49 @@ jobs:
           python3 $(which suricata-update) -V
       - run: suricatasc -h
 
-  freebsd-15-0:
-    name: FreeBSD 15.0
+  freebsd-15-1:
+    name: FreeBSD 15.1
     runs-on: ubuntu-latest
     needs: [prepare-deps]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Downloading prep archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
-      - uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1
+      - uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc
         with:
-          release: "15.0"
+          release: "15.1"
           arch: x86_64
           usesh: true
           sync: rsync
           copyback: false
           envs: "DEFAULT_CFLAGS"
-          prepare: |
-            pkg install -y \
-              autoconf \
-              automake \
-              gmake \
-              jq \
-              rust-cbindgen \
-              jansson \
-              libpcap \
-              libtool \
-              libyaml \
-              pcre2 \
-              pkgconf \
-              python3 \
-              py312-pyyaml \
-              rust
-          run: |
-            tar xf prep/suricata-verify.tar.gz
-            ./autogen.sh
-            CFLAGS="${DEFAULT_CFLAGS}" ./configure --enable-warnings --enable-unittests
-            gmake -j$(sysctl -n hw.ncpu)
-            ./src/suricata -u -l /tmp/
-            python3 ./suricata-verify/run.py -q --debug-failed
+          prepare: ./qa/ci/freebsd.sh prepare
+          run: ./qa/ci/freebsd.sh run
+
+  openbsd-7-9:
+    name: OpenBSD 7.9
+    runs-on: ubuntu-latest
+    needs: [prepare-deps]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Downloading prep archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: prep
+          path: prep
+      - uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945
+        with:
+          release: "7.9"
+          arch: x86_64
+          usesh: true
+          sync: rsync
+          copyback: false
+          envs: "DEFAULT_CFLAGS"
+          prepare: ./qa/ci/openbsd.sh prepare
+          run: ./qa/ci/openbsd.sh run
 
   windows-msys2-mingw64-npcap:
     name: Windows MSYS2 MINGW64 (NPcap)
@@ -3497,14 +3576,14 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-jq mingw-w64-x86_64-libxml2
+          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-pkgconf mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-libxml2
       # hack: install our own cbindgen system wide as we can't get the
       # preinstalled one to be picked up by configure
       - name: cbindgen
         run: cargo install --root /usr --force --debug --version 0.24.3 cbindgen
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -3554,19 +3633,19 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-jq mingw-w64-x86_64-libxml2 libpcap-devel mingw-w64-x86_64-libpcap
+          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-pkgconf mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-libxml2 libpcap-devel mingw-w64-x86_64-libpcap
       # hack: install our own cbindgen system wide as we can't get the
       # preinstalled one to be picked up by configure
       - name: cbindgen
         run: cargo install --root /usr --force --debug --version 0.24.3 cbindgen
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xvf suricata-*.tar.gz --strip-components=1
@@ -3613,18 +3692,19 @@ jobs:
             mingw-w64-ucrt-x86_64-libtool
             mingw-w64-ucrt-x86_64-libyaml
             mingw-w64-ucrt-x86_64-pcre2
+            mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-python-yaml
             mingw-w64-ucrt-x86_64-rust
             mingw-w64-ucrt-x86_64-toolchain
             unzip
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xvf suricata-*.tar.gz --strip-components=1
@@ -3659,14 +3739,14 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-jq mingw-w64-x86_64-libxml2 libpcap-devel mingw-w64-x86_64-libpcap
+          install: git mingw-w64-x86_64-toolchain automake1.16 automake-wrapper autoconf libtool libyaml-devel pcre2-devel jansson-devel make mingw-w64-x86_64-libyaml mingw-w64-x86_64-pcre2 mingw-w64-x86_64-pkgconf mingw-w64-x86_64-rust mingw-w64-x86_64-jansson unzip p7zip python-setuptools mingw-w64-x86_64-python-yaml mingw-w64-x86_64-libxml2 libpcap-devel mingw-w64-x86_64-libpcap
       # hack: install our own cbindgen system wide as we can't get the
       # preinstalled one to be picked up by configure
       - name: cbindgen
         run: cargo install --root /usr --force --debug --version 0.24.3 cbindgen
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: git config --global --add safe.directory /__w/suricata/suricata
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: prep
           path: prep
@@ -3749,7 +3829,7 @@ jobs:
           dnf install -y pfring
 
       - name: Download suricata.tar.gz
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
       - run: tar xf suricata-*.tar.gz --strip-components=1

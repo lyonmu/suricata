@@ -30,7 +30,115 @@
 #include "win32-service.h"
 #include "util-debug.h"
 
+#include <sddl.h>
+
+/* The default service DACL, but without SERVICE_USER_DEFINED_CONTROL (CR) for
+ * interactive (IU) and service (SU) users, so only SYSTEM and Administrators
+ * can send user-defined control codes. */
+#define SERVICE_SDDL                                                                               \
+    "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)"                           \
+    "(A;;CCLCSWLORC;;;IU)(A;;CCLCSWLORC;;;SU)"
+
+/** Append a character, leaving room for the terminating NUL. */
+static bool SCServiceAppendChar(char *path, size_t size, size_t *len, char c)
+{
+    if (size == 0 || *len >= size - 1) {
+        return false;
+    }
+    path[(*len)++] = c;
+    path[*len] = '\0';
+    return true;
+}
+
+/**
+ * Quote an argument for the Windows C runtime. Backslashes are literal except
+ * before a double quote: emit 2n+1 backslashes before an embedded quote, and
+ * 2n before the closing quote. Always quote, including empty arguments.
+ */
+static bool SCServiceAppendArgument(char *path, size_t size, size_t *len, const char *arg)
+{
+    if (!SCServiceAppendChar(path, size, len, '"')) {
+        return false;
+    }
+    while (*arg != '\0') {
+        size_t backslashes = 0;
+        while (*arg == '\\') {
+            backslashes++;
+            arg++;
+        }
+        for (size_t i = 0; i < backslashes; i++) {
+            if (!SCServiceAppendChar(path, size, len, '\\')) {
+                return false;
+            }
+            if ((*arg == '"' || *arg == '\0') && !SCServiceAppendChar(path, size, len, '\\')) {
+                return false;
+            }
+        }
+        if (*arg == '\0') {
+            break;
+        }
+        if (*arg == '"' && !SCServiceAppendChar(path, size, len, '\\')) {
+            return false;
+        }
+        if (!SCServiceAppendChar(path, size, len, *arg++)) {
+            return false;
+        }
+    }
+    return SCServiceAppendChar(path, size, len, '"');
+}
+
+/** Build the service command line without accessing SCM. */
+static bool SCServiceBuildCommandLine(char *path, size_t size, const char *module, int argc,
+        const char *const *argv, const char *service_option)
+{
+    if (size == 0) {
+        return false;
+    }
+    path[0] = '\0';
+    size_t len = 0;
+    if (!SCServiceAppendArgument(path, size, &len, module)) {
+        return false;
+    }
+    for (int i = 1; i < argc; i++) {
+        /* Preserve the existing service-option prefix matching. */
+        if (strlen(argv[i]) <= strlen(service_option) &&
+                strncmp(service_option, argv[i], strlen(argv[i])) == 0) {
+            continue;
+        }
+        if (!SCServiceAppendChar(path, size, &len, ' ') ||
+                !SCServiceAppendArgument(path, size, &len, argv[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Resolve the executable and reject truncation before making any SCM calls. */
+static bool SCServiceGetCommandLine(
+        char *path, size_t size, int argc, char **argv, const char *service_option)
+{
+    char module[2048];
+    DWORD len = GetModuleFileName(NULL, module, sizeof(module));
+    if (len == 0) {
+        SCLogError("Can't get path to service binary: %d", (int)GetLastError());
+        return false;
+    }
+    if (len >= sizeof(module)) {
+        SCLogError("failed to construct service path string: binary path truncated");
+        return false;
+    }
+    if (!SCServiceBuildCommandLine(
+                path, size, module, argc, (const char *const *)argv, service_option)) {
+        SCLogError("failed to construct service path string: invalid or truncated command line");
+        return false;
+    }
+    return true;
+}
+
 static SERVICE_STATUS_HANDLE service_status_handle = 0;
+
+/* Pending SC_SERVICE_REQUEST_* flags, handled by the main loop. */
+static SC_ATOMIC_DECLARE(uint32_t, service_requests);
 
 static int service_argc = 0;
 
@@ -81,10 +189,32 @@ static void SCAtExitHandler(void)
 }
 
 /**
+ * \brief Get and clear the pending service control requests.
+ *
+ * \retval SC_SERVICE_REQUEST_* flags
+ */
+uint32_t SCServiceTakeRequests(void)
+{
+    return SC_ATOMIC_AND(service_requests, 0);
+}
+
+/**
  * \brief Service handler
  */
 static DWORD WINAPI SCServiceCtrlHandlerEx(DWORD code, DWORD etype, LPVOID edata, LPVOID context)
 {
+    if (code == SC_SERVICE_CONTROL_RELOAD_RULES) {
+        /* Defer logging to the main loop, after logging initialization. */
+        SC_ATOMIC_OR(service_requests, SC_SERVICE_REQUEST_RELOAD_RULES);
+        return NO_ERROR;
+    }
+
+    if (code == SC_SERVICE_CONTROL_REOPEN_LOG_FILES) {
+        /* Defer logging to the main loop, after logging initialization. */
+        SC_ATOMIC_OR(service_requests, SC_SERVICE_REQUEST_REOPEN_LOG_FILES);
+        return NO_ERROR;
+    }
+
     if (code == SERVICE_CONTROL_SHUTDOWN || code == SERVICE_CONTROL_STOP) {
         SERVICE_STATUS status = {
             SERVICE_WIN32,
@@ -203,6 +333,33 @@ int SCServiceInit(int argc, char **argv)
 }
 
 /**
+ * \brief Restrict who can send user-defined control codes to the service.
+ *
+ * By default, interactive and service users can send user-defined control
+ * codes to a service. Restrict this to SYSTEM and Administrators as these
+ * codes will be used for runtime control of Suricata, such as rule reloads.
+ */
+static int SCServiceSetSecurity(SC_HANDLE service)
+{
+    PSECURITY_DESCRIPTOR sd = NULL;
+    int ret = 0;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(
+                SERVICE_SDDL, SDDL_REVISION_1, &sd, NULL)) {
+        SCLogError("Can't create service security descriptor: %d", (int)GetLastError());
+        return -1;
+    }
+
+    if (!SetServiceObjectSecurity(service, DACL_SECURITY_INFORMATION, sd)) {
+        SCLogError("Can't set service security descriptor: %d", (int)GetLastError());
+        ret = -1;
+    }
+
+    LocalFree(sd);
+    return ret;
+}
+
+/**
  * \brief Install suricata as service
  *
  * \param argc num of arguments
@@ -214,34 +371,10 @@ int SCServiceInstall(int argc, char **argv)
     SC_HANDLE service = NULL;
     SC_HANDLE scm = NULL;
     int ret = -1;
-    int i = 0;
 
     do {
-        memset(path, 0, sizeof(path));
-
-        path[0] = '"';
-        if (GetModuleFileName(NULL, path + 1, sizeof(path) - 1) == 0) {
-            SCLogError("Can't get path to service binary: %d", (int)GetLastError());
+        if (!SCServiceGetCommandLine(path, sizeof(path), argc, argv, "--service-install")) {
             break;
-        }
-        if (strlcat(path, "\"", sizeof(path)) >= sizeof(path)) {
-            SCLogError("failed to construct service path string: path truncated: %s", path);
-            break;
-        }
-
-        /* skip name of binary itself */
-        for (i = 1; i < argc; i++) {
-            if ((strlen(argv[i]) <= strlen("--service-install")) && (strncmp("--service-install", argv[i], strlen(argv[i])) == 0)) {
-                continue;
-            }
-            if (strlcat(path, " ", sizeof(path)) >= sizeof(path)) {
-                SCLogError("failed to construct service path string: path truncated: %s", path);
-                return -1;
-            }
-            if (strlcat(path, argv[i], sizeof(path)) >= sizeof(path)) {
-                SCLogError("failed to construct service path string: path truncated: %s", path);
-                return -1;
-            }
         }
 
         if ((scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS)) == NULL) {
@@ -266,6 +399,11 @@ int SCServiceInstall(int argc, char **argv)
 
         if (service == NULL) {
             SCLogError("Can't create service: %d", (int)GetLastError());
+            break;
+        }
+
+        if (SCServiceSetSecurity(service) != 0) {
+            DeleteService(service);
             break;
         }
 
@@ -350,34 +488,10 @@ int SCServiceChangeParams(int argc, char **argv)
     SC_HANDLE service = NULL;
     SC_HANDLE scm = NULL;
     int ret = -1;
-    int i = 0;
 
     do {
-        memset(path, 0, sizeof(path));
-
-        path[0] = '"';
-        if (GetModuleFileName(NULL, path + 1, sizeof(path) - 1) == 0) {
-            SCLogError("Can't get path to service binary: %d", (int)GetLastError());
+        if (!SCServiceGetCommandLine(path, sizeof(path), argc, argv, "--service-change-params")) {
             break;
-        }
-        if (strlcat(path, "\"", sizeof(path)) >= sizeof(path)) {
-            SCLogError("failed to construct service path string: path truncated: %s", path);
-            break;
-        }
-
-        /* skip name of binary itself */
-        for (i = 1; i < argc; i++) {
-            if ((strlen(argv[i]) <= strlen("--service-change-params")) && (strncmp("--service-change-params", argv[i], strlen(argv[i])) == 0)) {
-                continue;
-            }
-            if (strlcat(path, " ", sizeof(path)) >= sizeof(path)) {
-                SCLogError("failed to construct service path string: path truncated: %s", path);
-                return -1;
-            }
-            if (strlcat(path, argv[i], sizeof(path)) >= sizeof(path)) {
-                SCLogError("failed to construct service path string: path truncated: %s", path);
-                return -1;
-            }
         }
 
         if ((scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS)) == NULL) {

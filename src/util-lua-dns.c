@@ -32,7 +32,7 @@
 static const char dns_tx[] = "suricata:dns:tx";
 
 struct LuaTx {
-    DNSTransaction *tx;
+    SCLuaTxRef ref;
 };
 
 static int LuaDnsGetTx(lua_State *L)
@@ -44,11 +44,11 @@ static int LuaDnsGetTx(lua_State *L)
     if (tx == NULL) {
         return LuaCallbackError(L, "error: no tx available");
     }
-    struct LuaTx *ltx = (struct LuaTx *)lua_newuserdata(L, sizeof(*ltx));
+    struct LuaTx *ltx = SCLuaNewUserData(L, SCLUA_TUD_DNS_TX, sizeof(*ltx));
     if (ltx == NULL) {
         return LuaCallbackError(L, "error: fail to allocate user data");
     }
-    ltx->tx = tx;
+    SCLuaTxRefInit(L, &ltx->ref, LuaStateGetTxId(L));
 
     luaL_getmetatable(L, dns_tx);
     lua_setmetatable(L, -2);
@@ -58,85 +58,95 @@ static int LuaDnsGetTx(lua_State *L)
 
 static int LuaDnsTxGetRrname(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetRrname(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetRrname(L, txptr);
 }
 
 static int LuaDnsTxGetTxid(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetTxId(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetTxId(L, txptr);
 }
 
 static int LuaDnsTxGetRcode(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetRcode(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetRcode(L, txptr);
 }
 
 static int LuaDnsTxGetRcodeString(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetRcodeString(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetRcodeString(L, txptr);
 }
 
 static int LuaDnsTxGetRecursionDesired(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    uint16_t flags = SCDnsTxGetResponseFlags(tx->tx);
-    int recursion_desired = flags & 0x0080 ? 1 : 0;
+    /* RD is a request flag (bit 0x0100); the response flags only carry
+     * RA (0x0080) and friends */
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    uint16_t flags = SCDnsTxGetRequestFlags(txptr);
+    int recursion_desired = flags & 0x0100 ? 1 : 0;
     lua_pushboolean(L, recursion_desired);
     return 1;
 }
 
 static int LuaDnsTxGetQueries(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetQueryTable(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetQueryTable(L, txptr);
 }
 
 static int LuaDnsTxGetAnswers(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetAnswerTable(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetAnswerTable(L, txptr);
 }
 
 static int LuaDnsTxGetAuthorities(lua_State *L)
 {
-    struct LuaTx *tx = luaL_testudata(L, 1, dns_tx);
+    struct LuaTx *tx = SCLuaTestUserData(L, 1, dns_tx, SCLUA_TUD_DNS_TX);
     if (tx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    return SCDnsLuaGetAuthorityTable(L, tx->tx);
+    SCLUA_RESOLVE_TX(L, &tx->ref, txptr);
+    return SCDnsLuaGetAuthorityTable(L, txptr);
 }
 
 static const struct luaL_Reg txlib[] = {

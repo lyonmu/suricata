@@ -33,7 +33,7 @@
 static const char ja3_tx[] = "suricata:ja3:tx";
 
 struct LuaTx {
-    void *tx; // Quic or TLS Transaction
+    SCLuaTxRef ref; // (flow, tx id); the state is resolved on demand
     AppProto alproto;
 };
 
@@ -49,11 +49,11 @@ static int LuaJa3GetTx(lua_State *L)
     if (tx == NULL) {
         return LuaCallbackError(L, "error: no tx available");
     }
-    struct LuaTx *ltx = (struct LuaTx *)lua_newuserdata(L, sizeof(*ltx));
+    struct LuaTx *ltx = SCLuaNewUserData(L, SCLUA_TUD_JA3_TX, sizeof(*ltx));
     if (ltx == NULL) {
         return LuaCallbackError(L, "error: fail to allocate user data");
     }
-    ltx->tx = tx;
+    SCLuaTxRefInit(L, &ltx->ref, LuaStateGetTxId(L));
     ltx->alproto = alproto;
 
     luaL_getmetatable(L, ja3_tx);
@@ -64,13 +64,14 @@ static int LuaJa3GetTx(lua_State *L)
 
 static int LuaJa3TxGetHash(lua_State *L)
 {
-    struct LuaTx *ltx = luaL_testudata(L, 1, ja3_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ja3_tx, SCLUA_TUD_JA3_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
     if (ltx->alproto == ALPROTO_TLS) {
-        SSLState *ssl_state = (SSLState *)ltx->tx;
+        SSLState *ssl_state = (SSLState *)txptr;
         if (ssl_state->client_connp.ja3_hash == NULL) {
             lua_pushnil(L);
             return 1;
@@ -80,7 +81,7 @@ static int LuaJa3TxGetHash(lua_State *L)
     } // else QUIC {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    if (!SCQuicTxGetJa3(ltx->tx, STREAM_TOSERVER, &buf, &b_len)) {
+    if (!SCQuicTxGetJa3(txptr, STREAM_TOSERVER, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -92,13 +93,14 @@ static int LuaJa3TxGetHash(lua_State *L)
 
 static int LuaJa3TxGetString(lua_State *L)
 {
-    struct LuaTx *ltx = luaL_testudata(L, 1, ja3_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ja3_tx, SCLUA_TUD_JA3_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
     if (ltx->alproto == ALPROTO_TLS) {
-        SSLState *ssl_state = (SSLState *)ltx->tx;
+        SSLState *ssl_state = (SSLState *)txptr;
         if (ssl_state->client_connp.ja3_str == NULL ||
                 ssl_state->client_connp.ja3_str->data == NULL) {
             lua_pushnil(L);
@@ -109,7 +111,7 @@ static int LuaJa3TxGetString(lua_State *L)
     } // else QUIC {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    if (!SCQuicTxGetJa3(ltx->tx, STREAM_TOSERVER, &buf, &b_len)) {
+    if (!SCQuicTxGetJa3(txptr, STREAM_TOSERVER, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -118,13 +120,14 @@ static int LuaJa3TxGetString(lua_State *L)
 
 static int LuaJa3TxGetServerHash(lua_State *L)
 {
-    struct LuaTx *ltx = luaL_testudata(L, 1, ja3_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ja3_tx, SCLUA_TUD_JA3_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
     if (ltx->alproto == ALPROTO_TLS) {
-        SSLState *ssl_state = (SSLState *)ltx->tx;
+        SSLState *ssl_state = (SSLState *)txptr;
         if (ssl_state->server_connp.ja3_hash == NULL) {
             lua_pushnil(L);
             return 1;
@@ -134,7 +137,7 @@ static int LuaJa3TxGetServerHash(lua_State *L)
     } // else QUIC {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    if (!SCQuicTxGetJa3(ltx->tx, STREAM_TOCLIENT, &buf, &b_len)) {
+    if (!SCQuicTxGetJa3(txptr, STREAM_TOCLIENT, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -146,13 +149,14 @@ static int LuaJa3TxGetServerHash(lua_State *L)
 
 static int LuaJa3TxGetServerString(lua_State *L)
 {
-    struct LuaTx *ltx = luaL_testudata(L, 1, ja3_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ja3_tx, SCLUA_TUD_JA3_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
     if (ltx->alproto == ALPROTO_TLS) {
-        SSLState *ssl_state = (SSLState *)ltx->tx;
+        SSLState *ssl_state = (SSLState *)txptr;
         if (ssl_state->server_connp.ja3_str == NULL ||
                 ssl_state->server_connp.ja3_str->data == NULL) {
             lua_pushnil(L);
@@ -163,7 +167,7 @@ static int LuaJa3TxGetServerString(lua_State *L)
     } // else QUIC {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    if (!SCQuicTxGetJa3(ltx->tx, STREAM_TOCLIENT, &buf, &b_len)) {
+    if (!SCQuicTxGetJa3(txptr, STREAM_TOCLIENT, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -183,7 +187,8 @@ static const struct luaL_Reg txlib[] = {
 static int LuaJa3Enable(lua_State *L)
 {
     SSLEnableJA3();
-    return 1;
+    /* global, parse-time switch: no result to return */
+    return 0;
 }
 
 static const struct luaL_Reg ja3lib[] = {

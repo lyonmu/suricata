@@ -33,7 +33,7 @@
 static const char ssh_tx[] = "suricata:ssh:tx";
 
 struct LuaTx {
-    void *tx; // SSHTransaction
+    SCLuaTxRef ref; // (flow, tx id); the SSHTransaction is resolved on demand
 };
 
 static int LuaSshGetTx(lua_State *L)
@@ -45,11 +45,11 @@ static int LuaSshGetTx(lua_State *L)
     if (tx == NULL) {
         return LuaCallbackError(L, "error: no tx available");
     }
-    struct LuaTx *ltx = (struct LuaTx *)lua_newuserdata(L, sizeof(*ltx));
+    struct LuaTx *ltx = SCLuaNewUserData(L, SCLUA_TUD_SSH_TX, sizeof(*ltx));
     if (ltx == NULL) {
         return LuaCallbackError(L, "error: fail to allocate user data");
     }
-    ltx->tx = tx;
+    SCLuaTxRefInit(L, &ltx->ref, LuaStateGetTxId(L));
 
     luaL_getmetatable(L, ssh_tx);
     lua_setmetatable(L, -2);
@@ -61,12 +61,13 @@ static int LuaSshTxGetProto(lua_State *L, uint8_t flags)
 {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    struct LuaTx *ltx = luaL_testudata(L, 1, ssh_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ssh_tx, SCLUA_TUD_SSH_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    if (!SCSshTxGetProtocol(ltx->tx, flags, &buf, &b_len)) {
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
+    if (!SCSshTxGetProtocol(txptr, flags, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -87,12 +88,13 @@ static int LuaSshTxGetSoftware(lua_State *L, uint8_t flags)
 {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    struct LuaTx *ltx = luaL_testudata(L, 1, ssh_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ssh_tx, SCLUA_TUD_SSH_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    if (!SCSshTxGetSoftware(ltx->tx, flags, &buf, &b_len)) {
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
+    if (!SCSshTxGetSoftware(txptr, flags, &buf, &b_len)) {
         lua_pushnil(L);
         return 1;
     }
@@ -113,12 +115,13 @@ static int LuaSshTxGetHassh(lua_State *L, uint8_t flags)
 {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    struct LuaTx *ltx = luaL_testudata(L, 1, ssh_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ssh_tx, SCLUA_TUD_SSH_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    if (SCSshTxGetHassh(ltx->tx, flags, &buf, &b_len) != 1) {
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
+    if (SCSshTxGetHassh(txptr, flags, &buf, &b_len) != 1) {
         lua_pushnil(L);
         return 1;
     }
@@ -139,12 +142,13 @@ static int LuaSshTxGetHasshString(lua_State *L, uint8_t flags)
 {
     const uint8_t *buf = NULL;
     uint32_t b_len = 0;
-    struct LuaTx *ltx = luaL_testudata(L, 1, ssh_tx);
+    struct LuaTx *ltx = SCLuaTestUserData(L, 1, ssh_tx, SCLUA_TUD_SSH_TX);
     if (ltx == NULL) {
         lua_pushnil(L);
         return 1;
     }
-    if (SCSshTxGetHasshString(ltx->tx, flags, &buf, &b_len) != 1) {
+    SCLUA_RESOLVE_TX(L, &ltx->ref, txptr);
+    if (SCSshTxGetHasshString(txptr, flags, &buf, &b_len) != 1) {
         lua_pushnil(L);
         return 1;
     }
@@ -178,7 +182,8 @@ static const struct luaL_Reg txlib[] = {
 static int LuaSshEnableHassh(lua_State *L)
 {
     SCSshEnableHassh();
-    return 1;
+    /* global, parse-time switch: no result to return */
+    return 0;
 }
 
 static const struct luaL_Reg sshlib[] = {

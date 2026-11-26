@@ -35,7 +35,7 @@ static int LuaBase64Encode(lua_State *L, SCBase64Mode mode)
         SCFree(output);
         return luaL_error(L, "base64 encoding failed");
     }
-    lua_pushstring(L, (const char *)output);
+    lua_pushlstring(L, output, out_len);
     SCFree(output);
 
     return 1;
@@ -55,6 +55,11 @@ static int LuaBase64Decode(lua_State *L, SCBase64Mode mode)
 {
     size_t input_len;
     const char *input = luaL_checklstring(L, 1, &input_len);
+    if (input_len == 0) {
+        /* empty input decodes to an empty string, not an error */
+        lua_pushlstring(L, "", 0);
+        return 1;
+    }
     char *output = SCCalloc(input_len, sizeof(char));
     if (output == NULL) {
         return luaL_error(L, "malloc");
@@ -65,8 +70,9 @@ static int LuaBase64Decode(lua_State *L, SCBase64Mode mode)
         return luaL_error(L, "base64 decoding failed");
     }
     DEBUG_VALIDATE_BUG_ON(n > input_len);
-    output[n] = '\0';
-    lua_pushstring(L, (const char *)output);
+    /* the decoded data is binary: push with length, pushstring would
+     * truncate at the first embedded NUL */
+    lua_pushlstring(L, output, n);
     SCFree(output);
 
     return 1;

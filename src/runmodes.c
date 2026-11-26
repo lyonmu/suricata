@@ -44,7 +44,6 @@
 #include "runmode-pcap-file.h"
 #include "runmode-unix-socket.h"
 #include "runmode-windivert.h"
-#include "util-unittest.h"
 #include "util-misc.h"
 #include "util-plugin.h"
 
@@ -405,8 +404,6 @@ int RunModeEngineIsIPS(int capture_mode, const char *runmode, const char *captur
 void RunModeDispatch(int runmode, const char *custom_mode, const char *capture_plugin_name,
         const char *capture_plugin_args)
 {
-    char *local_custom_mode = NULL;
-
     if (custom_mode == NULL) {
         custom_mode = RunModeGetConfOrDefault(runmode, capture_plugin_name);
         if (custom_mode == NULL)
@@ -436,9 +433,6 @@ void RunModeDispatch(int runmode, const char *custom_mode, const char *capture_p
     }
 
     mode->RunModeFunc();
-
-    if (local_custom_mode != NULL)
-        SCFree(local_custom_mode);
 
     /* Check if the alloted queues have at least 1 reader and writer */
     TmValidateQueueState();
@@ -534,7 +528,6 @@ static void RunOutputFreeList(void)
     }
 }
 
-static int file_logger_count = 0;
 static int filedata_logger_count = 0;
 
 int RunModeOutputFiledataEnabled(void)
@@ -588,7 +581,6 @@ void RunModeShutDown(void)
     OutputClearActiveLoggers();
 
     /* Reset logger counts. */
-    file_logger_count = 0;
     filedata_logger_count = 0;
 }
 
@@ -656,7 +648,6 @@ static void SetupOutput(
         SCLogDebug("%s is a file logger", module->name);
         SCOutputRegisterFileLogger(module->logger_id, module->name, module->FileLogFunc, output_ctx,
                 module->ThreadInit, module->ThreadDeinit);
-        file_logger_count++;
     } else if (module->StreamingLogFunc) {
         SCLogDebug("%s is a streaming logger", module->name);
         SCOutputRegisterStreamingLogger(module->logger_id, module->name, module->StreamingLogFunc,

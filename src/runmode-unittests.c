@@ -22,12 +22,12 @@
 
 #include "suricata-common.h"
 #include "runmode-unittests.h"
-#include "util-unittest.h"
 
 #include "util-debug.h"
 #ifdef UNITTESTS
 #include "detect-parse.h"
 #include "detect-engine.h"
+#include "util-plugin.h"
 #include "detect-engine-alert.h"
 #include "detect-engine-address.h"
 #include "detect-engine-proto.h"
@@ -43,6 +43,7 @@
 #include "flow-manager.h"
 #include "flow-var.h"
 #include "flow-bit.h"
+#include "tm-threads.h"
 #include "pkt-var.h"
 
 #include "host.h"
@@ -69,7 +70,7 @@
 #include "util-cidr.h"
 #include "util-coredump-config.h"
 #include "util-unittest-helper.h"
-#include "util-time.h"
+#include "util-logopenfile.h"
 #include "util-rule-vars.h"
 #include "util-classification-config.h"
 #include "util-threshold-config.h"
@@ -82,7 +83,6 @@
 #include "util-affinity.h"
 
 #include "reputation.h"
-#include "util-atomic.h"
 #include "util-spm.h"
 #include "util-hash.h"
 #include "util-hashlist.h"
@@ -92,7 +92,6 @@
 #include "util-proto-name.h"
 #include "util-macset.h"
 #include "util-flow-rate.h"
-#include "util-memrchr.h"
 
 #include "util-mpm-ac.h"
 #include "util-mpm-hs.h"
@@ -105,6 +104,7 @@
 
 #include "util-streaming-buffer.h"
 #include "util-lua.h"
+#include "util-lua-common.h"
 #include "tm-modules.h"
 #include "tmqh-packetpool.h"
 #include "decode-chdlc.h"
@@ -137,6 +137,7 @@ static void RegisterUnittests(void)
 {
     UTHRegisterTests();
     SCTimeRegisterTests();
+    LogFileRegisterTests();
     StreamTcpRegisterTests();
     SigRegisterTests();
     SCReputationRegisterTests();
@@ -200,17 +201,19 @@ static void RegisterUnittests(void)
     DeStateRegisterTests();
     MemcmpRegisterTests();
     DetectEngineRegisterTests();
+    UtilPluginRegisterTests();
     SCLogRegisterTests();
     MagicRegisterTests();
     UtilMiscRegisterTests();
     ThreadingAffinityRegisterTests();
+    TmThreadsRegisterTests();
     DetectAddressTests();
     DetectProtoTests();
     DetectPortTests();
     DetectEngineAlertRegisterTests();
     SCAtomicRegisterTests();
-    MemrchrRegisterTests();
     AppLayerUnittestsRegister();
+    SCLuaCommonRegisterTests();
     StreamingBufferRegisterTests();
     MacSetRegisterTests();
     FlowRateRegisterTests();

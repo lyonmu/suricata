@@ -34,8 +34,6 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
-#include "util-time.h"
-#include "util-unittest.h"
 #include "util-validate.h"
 
 #include "util-debug.h"

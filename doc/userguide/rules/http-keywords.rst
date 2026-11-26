@@ -285,6 +285,12 @@ In the above example the host buffer would contain `suricata.io`.
 .. note:: ``http.host`` can have additional formatting/normalization applied
   to buffer contents, see :ref:`http.normalization` for additional details.
 
+.. note:: For HTTP/2, the ``http.host`` buffer is populated from the pseudo-header
+  ``:authority`` if present, otherwise it is populated from the ``Host`` header if present.
+  If both are present, and have different values, the event ``http2.authority_host_mismatch`` is raised.
+  See `RFC 9113 section 8.3.1
+  <https://datatracker.ietf.org/doc/html/rfc9113#name-request-pseudo-header-field>`_.
+
 .. _http.host.raw:
 
 http.host.raw
@@ -872,10 +878,11 @@ setting.
     # 2 types: 'deflate', 'lzma', 'both' will decompress deflate and lzma
     # compress-depth:
     # Specifies the maximum amount of data to decompress,
-    # set 0 for unlimited.
+    # set 0 for unlimited. The maximum is 4294967282 bytes.
     # decompress-depth:
-    # Specifies the maximum amount of decompressed data to obtain,
-    # set 0 for unlimited.
+    # Specifies the maximum amount of decompressed data to obtain. The
+    # output buffer grows on demand up to this limit. Set 0 to use the
+    # default limit of 50 MB. The maximum is 2147483640 bytes.
     swf-decompression:
       enabled: yes
       type: both

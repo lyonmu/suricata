@@ -34,6 +34,7 @@
 
 #include "app-layer-protos.h"
 #include "suricata-plugin.h"
+
 // do not export struct fields only used for debug validation
 // do this after suricata-plugin.h which needs autoconf.h to define SC_PACKAGE_VERSION
 #undef DEBUG_VALIDATION
@@ -52,6 +53,8 @@
 #include "util-var.h"
 #include "util-spm-bs.h"
 
+#include "decode.h"
+
 #include "app-layer-detect-proto.h"
 #include "app-layer-parser.h"
 #include "app-layer-register.h"
@@ -63,6 +66,8 @@
 #include "flow-bindgen.h"
 #include "flow-callbacks.h"
 #include "flow-storage.h"
+
+#include "packet-bindgen.h"
 
 #include "thread-callbacks.h"
 #include "thread-storage.h"

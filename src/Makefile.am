@@ -4,7 +4,7 @@ if BUILD_FUZZTARGETS
     fuzz_applayerparserparse fuzz_siginit \
     fuzz_confyamlloadstring fuzz_decodepcapfile \
     fuzz_sigpcap fuzz_mimedecparseline fuzz_decodebase64 \
-    fuzz_iprep
+    fuzz_iprep fuzz_dataset
 if HAS_FUZZPCAP
     bin_PROGRAMS += fuzz_sigpcap_aware fuzz_predefpcap_aware
 endif
@@ -343,7 +343,6 @@ noinst_HEADERS = \
 	log-stats.h \
 	log-tcp-data.h \
 	log-tlsstore.h \
-	output-eve-bindgen.h \
 	output-eve-kafka.h \
 	output-eve-null.h \
 	output-eve-stream.h \
@@ -387,6 +386,7 @@ noinst_HEADERS = \
 	output-streaming.h \
 	output-tx.h \
 	output.h \
+	packet-bindgen.h \
 	packet-queue.h \
 	packet.h \
 	pkt-var.h \
@@ -541,7 +541,6 @@ noinst_HEADERS = \
 	util-mem.h \
 	util-memcmp.h \
 	util-memcpy.h \
-	util-memrchr.h \
 	util-misc.h \
 	util-mpm-ac-ks.h \
 	util-mpm-ac-queue.h \
@@ -1100,7 +1099,6 @@ libsuricata_c_a_SOURCES = \
 	util-magic.c \
 	util-mem.c \
 	util-memcmp.c \
-	util-memrchr.c \
 	util-misc.c \
 	util-mpm-ac-ks-small.c \
 	util-mpm-ac-ks.c \
@@ -1179,12 +1177,14 @@ EXTRA_DIST = \
 	tests/detect-template.c \
 	tests/detect-transform-pcrexform.c \
 	tests/detect-ttl.c \
+	tests/source-netmap.c \
 	tests/source-pcap.c \
 	tests/app-layer-htp-file.c \
 	tests/detect-engine-alert.c \
 	tests/detect-engine-content-inspection.c \
 	tests/detect-icmpv4hdr.c \
 	tests/detect-parse.c \
+	tests/util-plugin.c \
 	tests/stream-tcp-reassemble.c \
 	tests/detect-file-data.c \
 	tests/detect-http-client-body.c \
@@ -1410,6 +1410,18 @@ else
 endif
 # force usage of CXX for linker
 nodist_EXTRA_fuzz_iprep_SOURCES = force-cxx-linking.cxx
+
+fuzz_dataset_SOURCES = tests/fuzz/fuzz_dataset.c
+fuzz_dataset_LDFLAGS = $(LDFLAGS_FUZZ)
+fuzz_dataset_LDADD = $(LDADD_FUZZ)
+fuzz_dataset_DEPENDENCIES = libsuricata_c.a $(RUST_SURICATA_LIB)
+if HAS_FUZZLDFLAGS
+    fuzz_dataset_LDFLAGS += $(LIB_FUZZING_ENGINE)
+else
+    fuzz_dataset_SOURCES += tests/fuzz/onefile.c
+endif
+# force usage of CXX for linker
+nodist_EXTRA_fuzz_dataset_SOURCES = force-cxx-linking.cxx
 
 fuzz_mimedecparseline_SOURCES = tests/fuzz/fuzz_mimedecparseline.c
 fuzz_mimedecparseline_LDFLAGS = $(LDFLAGS_FUZZ)

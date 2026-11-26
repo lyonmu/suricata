@@ -31,11 +31,8 @@
 #include "threadvars.h"
 #include "detect.h"
 
-typedef struct LuaStreamingBuffer_ {
-    const uint8_t *data;
-    uint32_t data_len;
-    uint8_t flags;
-} LuaStreamingBuffer;
+/* see detect-lua.h */
+typedef struct DetectLuaData DetectLuaData;
 
 lua_State *LuaGetState(void);
 void LuaReturnState(lua_State *s);
@@ -65,9 +62,16 @@ File *LuaStateGetFile(lua_State *luastate);
 /** \brief get detect engine thread context pointer from the lua state */
 DetectEngineThreadCtx *LuaStateGetDetCtx(lua_State *luastate);
 
-LuaStreamingBuffer *LuaStateGetStreamingBuffer(lua_State *luastate);
+/** \brief get the per-rule DetectLuaData, NULL when the state has none
+ * (output/transform states) */
+DetectLuaData *LuaStateGetDetectLuaData(lua_State *luastate);
+
+void LuaStateSetDetectLuaData(lua_State *luastate, DetectLuaData *ld);
 
 int LuaStateGetDirection(lua_State *luastate);
+
+/* \brief get a string argument from the stack, NULL when absent or empty */
+const char *LuaGetStringArgument(lua_State *luastate, int idx);
 
 /* sets */
 
@@ -90,7 +94,10 @@ void LuaStateSetDetCtx(lua_State *luastate, DetectEngineThreadCtx *det_ctx);
 
 void LuaStateSetThreadVars(lua_State *luastate, ThreadVars *tv);
 
-void LuaStateSetStreamingBuffer(lua_State *luastate, LuaStreamingBuffer *b);
+/** \brief publish the state's invocation counter (once, at state init) */
+void LuaStateSetInvocationGen(lua_State *luastate, uint64_t *gen);
+/** \brief current invocation generation; 0 when the state has none */
+uint64_t LuaStateGetInvocationGen(lua_State *luastate);
 
 void LuaStateSetDirection(lua_State *luastate, int direction);
 

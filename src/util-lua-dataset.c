@@ -34,17 +34,23 @@
 
 #include "datasets.h"
 
+/*
+ * The handle stores a copy of the set name, not a Dataset* pointer.
+ * The engine frees and re-creates sets on rule reload
+ * (DatasetPostReloadCleanup) while output states keep running; a cached
+ * pointer would dangle. Re-resolving the name on every use follows the
+ * reload to the new set and fails cleanly if the set is gone.
+ */
 struct LuaDataset {
-    Dataset *set;
+    char name[DATASET_NAME_MAX_LEN + 1];
 };
 
 static int LuaDatasetGC(lua_State *luastate)
 {
     SCLogDebug("gc:start");
-    struct LuaDataset *s = (struct LuaDataset *)lua_touserdata(luastate, 1);
-    if (s != NULL && s->set != NULL) {
-        SCLogDebug("deref %s", s->set->name);
-        s->set = NULL;
+    struct LuaDataset *s = SCLuaTestUserData(luastate, 1, "dataset::metatable", SCLUA_TUD_DATASET);
+    if (s != NULL) {
+        s->name[0] = '\0';
     }
     SCLogDebug("gc:done");
     return 0;
@@ -53,46 +59,54 @@ static int LuaDatasetGC(lua_State *luastate)
 static int LuaDatasetGetRef(lua_State *luastate)
 {
     SCLogDebug("get");
-    struct LuaDataset *s = (struct LuaDataset *)lua_touserdata(luastate, 1);
-    if (s == NULL) {
-        LUA_ERROR("dataset is not initialized");
-    }
+    struct LuaDataset *s = SCLuaCheckUserData(luastate, 1, "dataset::metatable", SCLUA_TUD_DATASET);
 
     const char *name = lua_tostring(luastate, 2);
     if (name == NULL) {
         LUA_ERROR("null string");
     }
 
-    Dataset *dataset = DatasetFind(name, DATASET_TYPE_STRING);
-    if (dataset == NULL) {
+    if (DatasetFind(name, DATASET_TYPE_STRING) == NULL) {
         LUA_ERROR("dataset not found");
     }
-    s->set = dataset;
+    if (strlen(name) >= sizeof(s->name)) {
+        LUA_ERROR("dataset name too long");
+    }
+    snprintf(s->name, sizeof(s->name), "%s", name);
     return 0;
 }
 
 static int LuaDatasetAdd(lua_State *luastate)
 {
     SCLogDebug("add:start");
-    struct LuaDataset *s = (struct LuaDataset *)lua_touserdata(luastate, 1);
-    if (s == NULL) {
-        LUA_ERROR("dataset is not initialized");
+    struct LuaDataset *s = SCLuaCheckUserData(luastate, 1, "dataset::metatable", SCLUA_TUD_DATASET);
+    if (s->name[0] == '\0') {
+        LUA_ERROR("dataset is not initialized (call :get first)");
     }
-    if (!lua_isstring(luastate, 2)) {
+
+    /* re-resolve the set: the cached name is the only engine state we
+     * hold, so a set freed and reloaded under the same name is followed */
+    Dataset *dataset = DatasetFind(s->name, DATASET_TYPE_STRING);
+    if (dataset == NULL) {
+        LUA_ERROR("dataset not found");
+    }
+
+    size_t real_len = 0;
+    const uint8_t *str = (const uint8_t *)lua_tolstring(luastate, 2, &real_len);
+    if (str == NULL) {
         LUA_ERROR("1st arg is not a string");
     }
-    if (!lua_isnumber(luastate, 3)) {
-        LUA_ERROR("2nd arg is not a number");
+
+    if (!lua_isinteger(luastate, 3)) {
+        LUA_ERROR("2nd arg is not a string");
     }
-
-    const uint8_t *str = (const uint8_t *)lua_tostring(luastate, 2);
-    if (str == NULL) {
-        LUA_ERROR("1st arg is not null string");
+    lua_Integer n = lua_tointeger(luastate, 3);
+    if (n < 0 || (size_t)n > real_len) {
+        LUA_ERROR("length out of range for supplied string");
     }
+    uint32_t str_len = (uint32_t)n;
 
-    uint32_t str_len = lua_tonumber(luastate, 3);
-
-    int r = SCDatasetAdd(s->set, (const uint8_t *)str, str_len);
+    int r = SCDatasetAdd(dataset, str, str_len);
     /* return value through luastate, as a luanumber */
     lua_pushnumber(luastate, (lua_Number)r);
     SCLogDebug("add:end");
@@ -102,10 +116,11 @@ static int LuaDatasetAdd(lua_State *luastate)
 static int LuaDatasetNew(lua_State *luastate)
 {
     SCLogDebug("new:start");
-    struct LuaDataset *s = (struct LuaDataset *)lua_newuserdata(luastate, sizeof(*s));
+    struct LuaDataset *s = SCLuaNewUserData(luastate, SCLUA_TUD_DATASET, sizeof(*s));
     if (s == NULL) {
         LUA_ERROR("failed to get userdata");
     }
+    memset(s, 0, sizeof(*s));
     luaL_getmetatable(luastate, "dataset::metatable");
     lua_setmetatable(luastate, -2);
     SCLogDebug("new:done");

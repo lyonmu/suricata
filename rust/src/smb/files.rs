@@ -19,6 +19,8 @@ use crate::applayer::AppLayerGetFileStateRust;
 use crate::core::*;
 use crate::direction::Direction;
 use crate::filetracker::*;
+use crate::smb::events::SMBEvent;
+use crate::smb::smb::{SMB_CFG_MAX_READ_QUEUE_SIZE, SMB_CFG_MAX_WRITE_QUEUE_SIZE};
 use std;
 
 use crate::smb::smb::*;
@@ -111,6 +113,7 @@ impl SMBState {
             tx.id,
             String::from_utf8_lossy(file_name)
         );
+        self.file_tx_count += 1;
         self.transactions.push_back(tx);
         self.transactions.back_mut()
     }
@@ -172,6 +175,37 @@ impl SMBState {
         return None;
     }
 
+    /// OOO-queue backstop (bytes): configured queue size, or a 1 GiB hard
+    /// cap (16x the 64 MiB default) when limits are disabled.
+    pub fn ooo_queue_backstop(direction: Direction) -> u64 {
+        let queue_size = if direction == Direction::ToClient {
+            unsafe { SMB_CFG_MAX_READ_QUEUE_SIZE }
+        } else {
+            unsafe { SMB_CFG_MAX_WRITE_QUEUE_SIZE }
+        };
+        if queue_size != 0 {
+            u64::from(queue_size)
+        } else {
+            1 << 30 // 1 GiB hard backstop when the limits are disabled
+        }
+    }
+
+    /// OOO-queue backstop (chunk count): configured count, or a 1024 hard
+    /// cap (16x the default 64) when limits are off; chunks carry per-entry
+    /// overhead independent of size.
+    pub fn ooo_queue_backstop_cnt(direction: Direction) -> u64 {
+        let queue_cnt = if direction == Direction::ToClient {
+            unsafe { SMB_CFG_MAX_READ_QUEUE_CNT }
+        } else {
+            unsafe { SMB_CFG_MAX_WRITE_QUEUE_CNT }
+        };
+        if queue_cnt != 0 {
+            u64::from(queue_cnt)
+        } else {
+            1024 // hard chunk-count backstop when the limits are disabled
+        }
+    }
+
     // update in progress chunks for file transfers
     // return how much data we consumed
     pub fn filetracker_update(&mut self, direction: Direction, data: &[u8], gap_size: u32) -> u32 {
@@ -180,10 +214,44 @@ impl SMBState {
         } else {
             self.file_tc_left
         };
+        // Backstop: cap the OOO queue on every open file tx (an interleaved
+        // handle can hide a queue); runs when the call feeds data: app-layer
+        // OOO needs no stream gap to grow a queue, an empty call grows none.
+        // A queue can only exist inside a held file tx.
+        if !data.is_empty() && self.file_tx_count > 0 {
+            let backstop = Self::ooo_queue_backstop(direction);
+            let cnt_backstop = Self::ooo_queue_backstop_cnt(direction);
+            for tx in &mut self.transactions {
+                if let Some(SMBTransactionTypeData::FILE(ref mut tdf)) = tx.type_data {
+                    if tdf.direction == direction && !tdf.file_tracker.is_done() {
+                        let queued_data = tdf.file_tracker.get_queued_size();
+                        let queued_cnt = tdf.file_tracker.get_inflight_cnt() as u64;
+                        if queued_data > backstop || queued_cnt > cnt_backstop {
+                            SCLogDebug!(
+                                "QUEUED size {} / count {} > backstop {} / {}. Truncating file.",
+                                queued_data,
+                                queued_cnt,
+                                backstop,
+                                cnt_backstop
+                            );
+                            filetracker_trunc(&mut tdf.file_tracker);
+                            // Attribute the truncation to the file tx
+                            // actually truncated (not the newest tx).
+                            tx.set_event(SMBEvent::TruncatedFileData);
+                            tx.tx_data.0.updated_ts = true;
+                            tx.tx_data.0.updated_tc = true;
+                        }
+                    }
+                }
+            }
+        }
+
         if chunk_left == 0 {
             return 0;
         }
         SCLogDebug!("chunk_left {} data {}", chunk_left, data.len());
+        // the backstop above no longer needs the handle: allocate it only
+        // when a chunk is in flight
         let file_handle = if direction == Direction::ToServer {
             self.file_ts_guid.to_vec()
         } else {
@@ -208,23 +276,10 @@ impl SMBState {
             self.file_tc_left = chunk_left;
         }
 
-        let ssn_gap = self.ts_ssn_gap | self.tc_ssn_gap;
         // get the tx and update it
         let consumed = match self.get_file_tx_by_fuid(&file_handle, direction) {
             Some(tx) => {
                 if let Some(SMBTransactionTypeData::FILE(ref mut tdf)) = tx.type_data {
-                    if ssn_gap {
-                        let queued_data = tdf.file_tracker.get_queued_size();
-                        if queued_data > 2000000 {
-                            // TODO should probably be configurable
-                            SCLogDebug!(
-                                "QUEUED size {} while we've seen GAPs. Truncating file.",
-                                queued_data
-                            );
-                            filetracker_trunc(&mut tdf.file_tracker);
-                        }
-                    }
-
                     // reset timestamp if we get called after a gap
                     if tdf.post_gap_ts > 0 {
                         tdf.post_gap_ts = 0;
@@ -246,6 +301,39 @@ impl SMBState {
     }
 }
 
+/// Event to raise if enqueuing `len` bytes at `offset` would exceed the
+/// configured SMB queue limits. OOO data at a new offset grows the queue;
+/// in-order appends drain it and are never rejected.
+pub(crate) fn smb_queue_limit_event(
+    ft: &FileTransferTracker, offset: u64, len: u64, to_client: bool,
+) -> Option<SMBEvent> {
+    let (max_size, max_cnt, ev_size, ev_cnt) = if to_client {
+        (
+            unsafe { SMB_CFG_MAX_READ_QUEUE_SIZE },
+            unsafe { SMB_CFG_MAX_READ_QUEUE_CNT },
+            SMBEvent::ReadQueueSizeExceeded,
+            SMBEvent::ReadQueueCntExceeded,
+        )
+    } else {
+        (
+            unsafe { SMB_CFG_MAX_WRITE_QUEUE_SIZE },
+            unsafe { SMB_CFG_MAX_WRITE_QUEUE_CNT },
+            SMBEvent::WriteQueueSizeExceeded,
+            SMBEvent::WriteQueueCntExceeded,
+        )
+    };
+    if max_size != 0
+        && ft.is_ooo_offset(offset)
+        && ft.get_inflight_size() + len > u64::from(max_size)
+    {
+        return Some(ev_size);
+    }
+    if max_cnt != 0 && ft.new_chunk_entry(offset) && ft.get_inflight_cnt() + 1 > max_cnt as usize {
+        return Some(ev_cnt);
+    }
+    None
+}
+
 use crate::applayer::AppLayerGetFileState;
 
 pub(super) unsafe extern "C" fn smb_gettxfiles(
@@ -255,7 +343,7 @@ pub(super) unsafe extern "C" fn smb_gettxfiles(
     if let Some(SMBTransactionTypeData::FILE(ref mut tdf)) = tx.type_data {
         let tx_dir: u8 = tdf.direction.into();
         if direction & tx_dir != 0 {
-            if let Some(sfcm) = { SURICATA_SMB_FILE_CONFIG } {
+            if let Some(sfcm) = SURICATA_SMB_FILE_CONFIG {
                 return AppLayerGetFileState {
                     fc: &mut tdf.file_tracker.file,
                     cfg: sfcm.files_sbcfg,
@@ -264,4 +352,85 @@ pub(super) unsafe extern "C" fn smb_gettxfiles(
         }
     }
     AppLayerGetFileState::err()
+}
+
+// Serializes the cfg-static-mutating SMB tests (cargo runs them in parallel).
+#[cfg(test)]
+pub static SMB_CFG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ooo_queue_backstop_thresholds() {
+        let _lock = super::SMB_CFG_TEST_LOCK.lock().unwrap();
+        // defaults: 64 MiB queue caps in both directions
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToClient), 67108864);
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToServer), 67108864);
+
+        // enabled (non-zero) queue size: the backstop follows it
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_SIZE = 4096;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_SIZE = 8192;
+        }
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToClient), 4096);
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToServer), 8192);
+
+        // disabled (0) queue size: the 1 GiB hard cap applies
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_SIZE = 0;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_SIZE = 0;
+        }
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToClient), 1 << 30);
+        assert_eq!(SMBState::ooo_queue_backstop(Direction::ToServer), 1 << 30);
+
+        // restore defaults
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_SIZE = 67108864;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_SIZE = 67108864;
+        }
+    }
+
+    #[test]
+    fn test_ooo_queue_backstop_cnt_thresholds() {
+        // defaults: 64 chunks in both directions
+        let _lock = super::SMB_CFG_TEST_LOCK.lock().unwrap();
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToClient), 64);
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToServer), 64);
+
+        // enabled (non-zero) queue count: the backstop follows it
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_CNT = 16;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_CNT = 32;
+        }
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToClient), 16);
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToServer), 32);
+
+        // disabled (0) queue count: the 1024 hard cap applies
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_CNT = 0;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_CNT = 0;
+        }
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToClient), 1024);
+        assert_eq!(SMBState::ooo_queue_backstop_cnt(Direction::ToServer), 1024);
+
+        // restore defaults
+        unsafe {
+            SMB_CFG_MAX_READ_QUEUE_CNT = 64;
+        }
+        unsafe {
+            SMB_CFG_MAX_WRITE_QUEUE_CNT = 64;
+        }
+    }
 }

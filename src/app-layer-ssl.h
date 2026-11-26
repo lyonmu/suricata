@@ -72,23 +72,23 @@ enum {
     TLS_DECODER_EVENT_CERTIFICATE_INVALID_ISSUER,
     TLS_DECODER_EVENT_CERTIFICATE_INVALID_VALIDITY,
     TLS_DECODER_EVENT_ERROR_MSG_ENCOUNTERED,
+    TLS_DECODER_EVENT_TOO_MANY_SUBJECT_ALTERNATIVE_NAMES,
     TLS_DECODER_EVENT_INVALID_SSL_RECORD,
 };
 
 enum TlsStateClient {
-    TLS_STATE_CLIENT_IN_PROGRESS = 0,
-    TLS_STATE_CLIENT_HELLO_DONE,
-    TLS_STATE_CLIENT_CERT_DONE,
-    TLS_STATE_CLIENT_HANDSHAKE_DONE,
+    TLS_STATE_CLIENT_STARTED = 0,
+    TLS_STATE_CLIENT_HELLO,
+    TLS_STATE_CLIENT_CERT,
+    TLS_STATE_CLIENT_DATA,
     TLS_STATE_CLIENT_FINISHED,
 };
 
 enum TlsStateServer {
-    TLS_STATE_SERVER_IN_PROGRESS = 0,
+    TLS_STATE_SERVER_STARTED = 0,
     TLS_STATE_SERVER_HELLO,
-    TLS_STATE_SERVER_CERT_DONE,
-    TLS_STATE_SERVER_HELLO_DONE,
-    TLS_STATE_SERVER_HANDSHAKE_DONE,
+    TLS_STATE_SERVER_CERT,
+    TLS_STATE_SERVER_DATA,
     TLS_STATE_SERVER_FINISHED,
 };
 
@@ -139,6 +139,10 @@ enum TlsStateServer {
 #define TLS_TC_RANDOM_SET BIT_U32(25)
 
 #define SSL_AL_FLAG_NEED_CLIENT_CERT BIT_U32(26)
+/* a message at or after the CertificateRequest position of the server
+ * flight was seen (or a client flight message): whether a client
+ * certificate is required is decided from here */
+#define SSL_AL_FLAG_SERVER_FLIGHT_DECIDED BIT_U32(27)
 
 /* config flags */
 #define SSL_TLS_LOG_PEM                         (1 << 0)
@@ -196,6 +200,28 @@ typedef struct SSLStateConnp_ {
     uint32_t cert0_issuerdn_len;
     uint8_t *cert0_serial;
     uint32_t cert0_serial_len;
+
+    /* the current handshake message failed to decode: suppress the phase
+     * advance that follows it (the phase data does not exist); the
+     * message bytes are consumed and parsing continues; reset per message */
+    bool phase_suppressed;
+    /* this connp's certificate message has not decoded fully (it failed,
+     * or a certificate in it failed): the certificate data is incomplete,
+     * so the handshake-done heuristic must not establish the data phase
+     * from it; set while the first certificate message is being decoded,
+     * cleared by a fully decoded certificate message only */
+    bool cert_data_incomplete;
+    /* a certificate message has fully decoded at least once: the chain
+     * content (count included) is final from here on; until then the
+     * parser state may already sit in the cert phase (entered at
+     * ServerHello completion or a certificate header) with an
+     * incomplete chain */
+    bool cert_chain_final;
+    /* a hello (including its supported_versions extension) decoded cleanly:
+     * this connp's version is final from here on. A failed hello sets the
+     * legacy version but leaves this clear, so a later record must not turn
+     * a partially decoded hello into a version match */
+    bool hello_decoded;
     int64_t cert0_not_before;
     int64_t cert0_not_after;
     char *cert0_fingerprint;
@@ -227,6 +253,8 @@ typedef struct SSLStateConnp_ {
     uint32_t hs_buffer_message_size;
     uint32_t hs_buffer_size;   /**< allocation size */
     uint32_t hs_buffer_offset; /**< write offset */
+    uint8_t hs_hdr[4];         /**< handshake header */
+    uint8_t hs_hdr_len;        /**< handshake header length */
 } SSLStateConnp;
 
 /**
@@ -262,6 +290,7 @@ typedef struct SSLState_ {
 void RegisterSSLParsers(void);
 void SSLEnableJA3(void);
 bool SSLJA3IsEnabled(void);
+bool SSLV3TxLogReady(void *tx);
 void SSLEnableJA4(void);
 bool SSLJA4IsEnabled(void);
 

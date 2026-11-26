@@ -1,10 +1,12 @@
-SUBDIRS =	ffi \
+SUBDIRS =	derive \
+		ffi \
 		htp \
 		sys \
 		suricatasc \
 		suricatactl
 
-EXTRA_DIST =	.cargo/config.toml.in \
+EXTRA_DIST =	.cargo/audit.toml \
+		.cargo/config.toml.in \
 		Cargo.lock \
 		Cargo.toml \
 		cbindgen.toml \
@@ -115,7 +117,7 @@ check-bindgen-bindings:
 if HAVE_BINDGEN
 	if test "$(top_srcdir)" = "$(top_builddir)"; then \
 		cp sys/src/sys.rs sys/src/sys.rs.orig; \
-		$(MAKE) update-bindings; \
+		$(MAKE) update-bindings || exit 1; \
 		if diff sys/src/sys.rs sys/src/sys.rs.orig > /dev/null 2>&1; then \
 			rm -f sys/src/sys.rs.orig; \
 		else \
@@ -131,7 +133,7 @@ endif
 check:
 	cd $(abs_top_srcdir)/rust && \
 		$(CARGO_ENV) \
-		$(CARGO) test --all $(RELEASE) --features "$(RUST_FEATURES)"
+		$(CARGO) test --workspace $(RELEASE) --features "$(RUST_FEATURES)"
 	$(MAKE) check-bindgen-bindings
 
 vendor:
@@ -157,6 +159,8 @@ if HAVE_BINDGEN
 		--allowlist-function 'SC.*' \
 		--allowlist-var 'SC.*' \
 		--allowlist-var 'SIGMATCH.*' \
+		--allowlist-type 'DetectSigmatchListEnum' \
+		--allowlist-type 'PacketL3Types' \
 		--opaque-type 'SCConfNode' \
 		--allowlist-type 'ThreadVars.?' \
 		--opaque-type 'ThreadVars.?' \

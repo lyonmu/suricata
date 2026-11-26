@@ -982,6 +982,7 @@ app-layer:
       enabled: yes
       detection-ports:
         dp: 5900, 5901, 5902, 5903, 5904, 5905, 5906, 5907, 5908, 5909
+      # max-string-length: 4 KiB
     mqtt:
       enabled: yes
       # max-msg-length: 1 MiB
@@ -1024,11 +1025,15 @@ app-layer:
       #encryption-handling: track-only
 
     pgsql:
-      enabled: no
+      # enabled: no
       # Stream reassembly size for PostgreSQL. By default, track it completely.
-      stream-depth: 0
+      # stream-depth: 0
       # Maximum number of live PostgreSQL transactions per flow
       # max-tx: 1024
+      # Maximum number of responses per PGSQL transaction
+      # Accepted values: 21-64, (min 21 to accommodate a full Startup sequence
+      # of responses)
+      # max-responses: 64
     dcerpc:
       enabled: yes
       # Maximum number of live DCERPC transactions per flow
@@ -1039,6 +1044,8 @@ app-layer:
       enabled: yes
       # memcap: 64 MiB
       # max-tx: 1024
+      # Maximum number of preliminary (1xx) responses kept per transaction.
+      # max-preliminary-responses: 16
     websocket:
       #enabled: yes
       # Maximum used payload size, the rest is skipped
@@ -1063,7 +1070,7 @@ app-layer:
     http2:
       enabled: yes
       # Maximum number of live HTTP2 streams in a flow
-      #max-streams: 4096
+      #max-streams: 256
       # Maximum headers table size
       #max-table-size: 65536
       # Maximum reassembly size for header + continuation frames
@@ -1202,10 +1209,11 @@ app-layer:
            # Two types: 'deflate', 'lzma', 'both' will decompress deflate and lzma
            # compress-depth:
            # Specifies the maximum amount of data to decompress,
-           # set 0 for unlimited.
+           # set 0 for unlimited. The maximum is 4294967282 bytes.
            # decompress-depth:
-           # Specifies the maximum amount of decompressed data to obtain,
-           # set 0 for unlimited.
+           # Specifies the maximum amount of decompressed data to obtain. The
+           # output buffer grows on demand up to this limit. Set 0 to use the
+           # default limit of 50 MB. The maximum is 2147483640 bytes.
            swf-decompression:
              enabled: no
              type: both
@@ -1850,6 +1858,14 @@ decoder:
   # has put the headers on, like when using netmap driver pickup.
   recursion-level:
     use-for-tracking: true
+  # If your packets sources are tunnels encapsulating the traffic,
+  # you can list here these tunnels and assign identifiers to them.
+  # tunnels:
+  #  - id: 1
+  #    type: erspan2
+  #    src: 192.168.1.1
+  #    dst: 192.168.1.3
+  #    session: 123
 
 ##
 ## Performance tuning and profiling
@@ -1918,6 +1934,9 @@ detect:
   thresholds:
     hash-size: 16384
     memcap: 16 MiB
+    # Settings for per thread threshold cache.
+    cache:
+      #max-entries: 256
 
   profiling:
     # Log the rules that made it past the prefilter stage, per packet
@@ -2409,7 +2428,7 @@ reference-config-file: @e_sysconfdir@reference.config
 # threshold-file: @e_sysconfdir@threshold.config
 
 ##
-## Suricata as a Firewall options (experimental)
+## Suricata as a Firewall options
 ##
 firewall:
   # toggle to enable firewall mode
@@ -2436,6 +2455,7 @@ firewall:
   #  default-policy: ["drop:flow"]
   #  packet:
   #    filter: ["drop:packet"]
+  #    pre-flow: ["accept:hook"]
   #  app:
   #    dns:
   #      request-started: ["accept:hook"]

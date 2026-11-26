@@ -16,13 +16,16 @@ by calling ``ssh.enable_hassh()``::
     return {}
   end
 
+``ssh.enable_hassh()`` is a process-global, parse-time switch that
+only affects flows parsed after the call, and returns no value.
+
 For use in rule matching, the rule must **hook** into a SSH
 transaction state. Available states are listed in :ref:`ssh-hooks`.
 For example:
 
 .. container:: example-rule
 
-  alert ssh::example-rule-emphasis:`response_banner_done` any any -> any any (sid: 1;)
+  alert ssh::example-rule-emphasis:`response_kex` any any -> any any (sid: 1;)
 
 Setup
 ^^^^^

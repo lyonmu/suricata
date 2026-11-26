@@ -41,7 +41,6 @@
 #include "app-layer.h"
 
 #include "util-byte.h"
-#include "util-unittest.h"
 #include "util-debug.h"
 #include "detect-pcre.h"
 
@@ -99,7 +98,8 @@ void DetectBytetestRegister (void)
  */
 static inline bool DetectBytetestValidateNbytesOnly(const DetectBytetestData *data, int32_t nbytes)
 {
-    return ((data->flags & DETECT_BYTETEST_STRING) && nbytes <= 23) || (nbytes <= 8);
+    return nbytes >= 0 &&
+           (((data->flags & DETECT_BYTETEST_STRING) && nbytes <= 23) || (nbytes <= 8));
 }
 
 static bool DetectBytetestValidateNbytes(
@@ -202,10 +202,10 @@ int DetectBytetestDoMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
         len = payload_len - offset;
     }
 
-    /* Validate that the to-be-extracted is within the packet
+    /* Validate that the to-be-extracted is within the packet.
      * \todo Should this validate it is in the *payload*?
      */
-    if (ptr < payload || nbytes > len) {
+    if (ptr < payload || nbytes < 0 || nbytes > len) {
         SCLogDebug("Data not within payload pkt=%p, ptr=%p, len=%" PRIu32 ", nbytes=%d", payload,
                 ptr, len, nbytes);
         SCReturnInt(0);
@@ -465,7 +465,7 @@ static DetectBytetestData *DetectBytetestParse(
         end_ptr = (char *)str_ptr;
         while (!(isspace((unsigned char)*end_ptr) || (*end_ptr == ',')) && (*end_ptr != '\0'))
             end_ptr++;
-        memmove(data_offset, str_ptr, end_ptr - str_ptr);
+        SCMemmove(data_offset, strlen(data_offset) + 1, str_ptr, end_ptr - str_ptr);
         data_offset[end_ptr-str_ptr] = '\0';
         if (data_offset[0] != '-' && isalpha((unsigned char)data_offset[0])) {
             *offset = SCStrdup(data_offset);

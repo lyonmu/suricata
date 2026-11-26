@@ -80,21 +80,7 @@ jobs:
           ./configure --enable-warnings
       - name: Run Cargo Audit
         working-directory: rust
-        run: |
-          IGNORES=()
-
-          # failure, via bendy
-          IGNORES+=(--ignore RUSTSEC-2020-0036)
-          # failure, via bendy
-          IGNORES+=(--ignore RUSTSEC-2019-0036)
-          # time crate update
-          IGNORES+=(--ignore RUSTSEC-2026-0009)
-          # rand, vla tls-parser
-          IGNORES+=(--ignore RUSTSEC-2026-0097)
-          # lru, doesn't affect us
-          IGNORES+=(--ignore RUSTSEC-2026-0253)
-
-          cargo audit -D warnings "${IGNORES[@]}"
+        run: cargo audit -D warnings
 
   # This job uses our MSRV and does a `cargo update` with the idea
   # that it should catch early any dependencies that have done a patch
@@ -152,7 +138,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install Minimum Supported Rust Version
         run: |
-          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $(awk -F '"' '/rust-version/ { print $2 }' rust/Cargo.toml.in)
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $(awk -F '"' '/^rust-version *=/ { print $2 }' rust/Cargo.toml.in)
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Configure Suricata
         run: |

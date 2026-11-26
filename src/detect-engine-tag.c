@@ -28,8 +28,6 @@
 #include "suricata-common.h"
 #include "detect-engine.h"
 #include "util-hash.h"
-#include "util-atomic.h"
-#include "util-time.h"
 #include "util-hashlist.h"
 #include "detect-engine-tag.h"
 #include "detect-engine-build.h"
@@ -38,7 +36,6 @@
 #include "host-storage.h"
 #include "flow-storage.h"
 
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "flow-util.h"
 #include "stream-tcp-private.h"

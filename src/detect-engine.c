@@ -74,7 +74,6 @@
 #include "util-hash.h"
 #include "util-byte.h"
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-action.h"
 #include "util-magic.h"
 #include "util-signal.h"
@@ -105,6 +104,7 @@ static DetectEngineMasterCtx g_master_de_ctx = { SCMUTEX_INITIALIZER,
 static uint32_t TenantIdHash(HashTable *h, void *data, uint16_t data_len);
 static char TenantIdCompare(void *d1, uint16_t d1_len, void *d2, uint16_t d2_len);
 static void TenantIdFree(void *d);
+static uint32_t DetectEngineTenantGetIdFromTunnel(const void *ctx, const Packet *p);
 static uint32_t DetectEngineTenantGetIdFromLivedev(const void *ctx, const Packet *p);
 static uint32_t DetectEngineTenantGetIdFromVlanId(const void *ctx, const Packet *p);
 static uint32_t DetectEngineTenantGetIdFromPcap(const void *ctx, const Packet *p);
@@ -1558,6 +1558,26 @@ void DetectBufferTypeSetDescriptionByName(const char *name, const char *desc)
     strlcpy(exists->description, desc, sizeof(exists->description));
 }
 
+void DetectBufferTypeSetRunAlways(const char *name)
+{
+    DetectBufferType *exists = DetectBufferTypeLookupByName(name);
+    if (!exists) {
+        return;
+    }
+    exists->run_always = true;
+}
+
+void DetectEngineBufferTypeSetRunAlways(DetectEngineCtx *de_ctx, const int id)
+{
+    const char *name = DetectEngineBufferTypeGetNameById(de_ctx, id);
+    if (name == NULL) {
+        return;
+    }
+    DetectBufferType *exists = DetectEngineBufferTypeLookupByName(de_ctx, name);
+    BUG_ON(!exists);
+    exists->run_always = true;
+}
+
 const char *DetectEngineBufferTypeGetDescriptionById(const DetectEngineCtx *de_ctx, const int id)
 {
     const DetectBufferType *exists = DetectEngineBufferTypeGetById(de_ctx, id);
@@ -2105,19 +2125,34 @@ int DetectEngineReloadIsIdle(void)
     return r;
 }
 
-/** \brief Do the content inspection & validation for a signature
+/** \internal
+ *  \brief is the engine's data final for this tx?
  *
- *  \param de_ctx Detection engine context
- *  \param det_ctx Detection engine thread context
- *  \param s Signature to inspect
- *  \param sm SigMatch to inspect
- *  \param f Flow
- *  \param flags app layer flags
- *  \param state App layer state
- *
- *  \retval 0 no match
- *  \retval 1 match
+ *  Past the engine's phase the answer is yes; at or beyond the tx end state it
+ *  is final too, even for engines registered at the completion state (no P+1).
+ *  AppLayerParserGetStateProgress() returns the end progress for disrupted
+ *  flows, so progress == end stays a valid finality signal there.
  */
+static bool DetectTxCompleted(
+        Flow *f, void *txv, uint8_t flags, const DetectEngineAppInspectionEngine *engine)
+{
+    if (f->alproto == ALPROTO_DOH2 && engine->alproto == ALPROTO_DOH2) {
+        // the DNS tx from DetectGetInnerTx is always complete
+        return true;
+    } // else
+    const int progress = AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags);
+    if (progress < 0) {
+        return false;
+    }
+    if (progress > engine->progress) {
+        return true;
+    }
+    if (progress < engine->progress) {
+        return false;
+    }
+    return progress == AppLayerParserGetTxEndState(f->proto, f->alproto, txv, flags);
+}
+
 uint8_t DetectEngineInspectGenericList(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const struct DetectEngineAppInspectionEngine_ *engine, const Signature *s, Flow *f,
         uint8_t flags, void *alstate, void *txv, uint64_t tx_id)
@@ -2131,8 +2166,18 @@ uint8_t DetectEngineInspectGenericList(DetectEngineCtx *de_ctx, DetectEngineThre
             match = sigmatch_table[smd->type].
                 AppLayerTxMatch(det_ctx, f, flags, alstate, txv, s, smd->ctx);
             KEYWORD_PROFILING_END(det_ctx, smd->type, (match == 1));
-            if (match == 0)
-                return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+            if (match == 0) {
+                /* like the buffer engines, a no match is final once the tx
+                 * moved past the phase the engine is registered at (P + 1).
+                 * stateful keywords read live tx state, so they stay
+                 * revisitable. */
+                if ((sigmatch_table[smd->type].flags & SIGMATCH_STATEFUL) != 0) {
+                    return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+                }
+                return DetectTxCompleted(f, txv, flags, engine)
+                               ? DETECT_ENGINE_INSPECT_SIG_CANT_MATCH
+                               : DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+            }
             if (match == 2) {
                 return DETECT_ENGINE_INSPECT_SIG_CANT_MATCH;
             }
@@ -2167,8 +2212,7 @@ uint8_t DetectEngineInspectBufferSingle(DetectEngineCtx *de_ctx, DetectEngineThr
     const int list_id = engine->sm_list;
     SCLogDebug("running inspect on %d", list_id);
 
-    const bool eof =
-            (AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags) > engine->progress);
+    const bool eof = DetectTxCompleted(f, txv, flags, engine);
 
     SCLogDebug("list %d mpm? %s transforms %p", engine->sm_list, engine->mpm ? "true" : "false",
             engine->v2.transforms);
@@ -2228,7 +2272,7 @@ uint8_t DetectEngineInspectBufferGeneric(DetectEngineCtx *de_ctx, DetectEngineTh
     const int list_id = engine->sm_list;
     SCLogDebug("running inspect on %d", list_id);
 
-    const bool eof = (AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags) > engine->progress);
+    const bool eof = DetectTxCompleted(f, txv, flags, engine);
 
     SCLogDebug("list %d mpm? %s transforms %p",
             engine->sm_list, engine->mpm ? "true" : "false", engine->v2.transforms);
@@ -2362,8 +2406,7 @@ uint8_t DetectEngineInspectMultiBufferGeneric(DetectEngineCtx *de_ctx,
     } while (1);
     if (local_id == 0) {
         // That means we did not get even one buffer value from the multi-buffer
-        const bool eof = (AppLayerParserGetStateProgress(f->proto, f->alproto, txv, flags) >
-                          engine->progress);
+        const bool eof = DetectTxCompleted(f, txv, flags, engine);
         if (eof && engine->match_on_null) {
             return DETECT_ENGINE_INSPECT_SIG_MATCH;
         }
@@ -3494,6 +3537,10 @@ static TmEcode DetectEngineThreadCtxInitForMT(ThreadVars *tv, DetectEngineThread
             det_ctx->TenantGetId = DetectEngineTenantGetIdFromLivedev;
             SCLogDebug("TENANT_SELECTOR_LIVEDEV");
             break;
+        case TENANT_SELECTOR_TUNNEL:
+            det_ctx->TenantGetId = DetectEngineTenantGetIdFromTunnel;
+            SCLogDebug("TENANT_SELECTOR_TUNNEL");
+            break;
         case TENANT_SELECTOR_DIRECT:
             det_ctx->TenantGetId = DetectEngineTenantGetIdFromPcap;
             SCLogDebug("TENANT_SELECTOR_DIRECT");
@@ -3542,9 +3589,10 @@ static TmEcode ThreadCtxDoInit (DetectEngineCtx *de_ctx, DetectEngineThreadCtx *
     /* Alert processing queue */
     AlertQueueInit(det_ctx);
 
-    /* byte_extract storage */
-    det_ctx->byte_values = SCMalloc(sizeof(*det_ctx->byte_values) *
-                                  (de_ctx->byte_extract_max_local_id + 1));
+    /* byte_extract/byte_math slots (value + written marker + writing
+     * signature); zeroed so an unwritten slot reads as unset */
+    det_ctx->byte_values =
+            SCCalloc((de_ctx->byte_extract_max_local_id + 1), sizeof(*det_ctx->byte_values));
     if (det_ctx->byte_values == NULL) {
         return TM_ECODE_FAILED;
     }
@@ -3672,6 +3720,21 @@ TmEcode DetectEngineThreadCtxInit(ThreadVars *tv, void *initdata, void **data)
     det_ctx->lua_memory_limit_errors =
             StatsRegisterCounter("detect.lua.memory_limit_errors", &tv->stats);
 
+    /* Register counters for luaxform (transform) errors. */
+    det_ctx->lua_transform_errors = StatsRegisterCounter("transform.lua.errors", &tv->stats);
+
+    /* Register a counter for luaxform blocked function attempts. */
+    det_ctx->lua_transform_blocked_function_errors =
+            StatsRegisterCounter("transform.lua.blocked_function_errors", &tv->stats);
+
+    /* Register a counter for luaxform instruction limit errors. */
+    det_ctx->lua_transform_instruction_limit_errors =
+            StatsRegisterCounter("transform.lua.instruction_limit_errors", &tv->stats);
+
+    /* Register a counter for luaxform memory limit errors. */
+    det_ctx->lua_transform_memory_limit_errors =
+            StatsRegisterCounter("transform.lua.memory_limit_errors", &tv->stats);
+
     det_ctx->json_content = NULL;
     det_ctx->json_content_capacity = 0;
     det_ctx->json_content_len = 0;
@@ -3743,6 +3806,24 @@ DetectEngineThreadCtx *DetectEngineThreadCtxInitForReload(
     }
     det_ctx->counter_alerts_suppressed =
             StatsRegisterCounter("detect.alerts_suppressed", &tv->stats);
+
+    /* the lua counters are registered by the normal thread init; the
+     * reload and multi-tenant contexts build det_ctx directly and need
+     * them too (StatsRegisterCounter returns the existing id) */
+    det_ctx->lua_rule_errors = StatsRegisterCounter("detect.lua.errors", &tv->stats);
+    det_ctx->lua_blocked_function_errors =
+            StatsRegisterCounter("detect.lua.blocked_function_errors", &tv->stats);
+    det_ctx->lua_instruction_limit_errors =
+            StatsRegisterCounter("detect.lua.instruction_limit_errors", &tv->stats);
+    det_ctx->lua_memory_limit_errors =
+            StatsRegisterCounter("detect.lua.memory_limit_errors", &tv->stats);
+    det_ctx->lua_transform_errors = StatsRegisterCounter("transform.lua.errors", &tv->stats);
+    det_ctx->lua_transform_blocked_function_errors =
+            StatsRegisterCounter("transform.lua.blocked_function_errors", &tv->stats);
+    det_ctx->lua_transform_instruction_limit_errors =
+            StatsRegisterCounter("transform.lua.instruction_limit_errors", &tv->stats);
+    det_ctx->lua_transform_memory_limit_errors =
+            StatsRegisterCounter("transform.lua.memory_limit_errors", &tv->stats);
 #ifdef PROFILING
     det_ctx->counter_mpm_list = StatsRegisterAvgCounter("detect.mpm_list", &tv->stats);
     det_ctx->counter_match_list = StatsRegisterAvgCounter("detect.match_list", &tv->stats);
@@ -4433,6 +4514,63 @@ int DetectEngineReloadTenantsBlocking(const int reload_cnt)
     return 0;
 }
 
+static int DetectEngineMultiTenantSetupLoadTunnelMappings(
+        const SCConfNode *mappings_root_node, bool failure_fatal)
+{
+    SCConfNode *mapping_node = NULL;
+
+    int mapping_cnt = 0;
+    if (mappings_root_node != NULL) {
+        TAILQ_FOREACH (mapping_node, &mappings_root_node->head, next) {
+            SCConfNode *tenant_id_node = SCConfNodeLookupChild(mapping_node, "tenant-id");
+            if (tenant_id_node == NULL || tenant_id_node->val == NULL)
+                goto bad_mapping;
+            SCConfNode *tunnel_id_node = SCConfNodeLookupChild(mapping_node, "tunnel-id");
+            if (tunnel_id_node == NULL || tunnel_id_node->val == NULL)
+                goto bad_mapping;
+
+            uint32_t tenant_id = 0;
+            if (StringParseUint32(&tenant_id, 10, (uint16_t)strlen(tenant_id_node->val),
+                        tenant_id_node->val) < 0) {
+                SCLogError("tenant-id  "
+                           "of %s is invalid",
+                        tenant_id_node->val);
+                goto bad_mapping;
+            }
+
+            uint16_t tunnel_id = 0;
+            if (StringParseUint16(&tunnel_id, 10, (uint16_t)strlen(tunnel_id_node->val),
+                        tunnel_id_node->val) < 0) {
+                SCLogError("tunnel id  "
+                           "of %s is invalid",
+                        tunnel_id_node->val);
+                goto bad_mapping;
+            }
+            if (tunnel_id == 0 || tunnel_id >= 0x8000) {
+                SCLogError("tunnel id  "
+                           "of %s is invalid: expects 1-32767",
+                        tunnel_id_node->val);
+                goto bad_mapping;
+            }
+
+            if (DetectEngineTenantRegisterTunnel(tenant_id, tunnel_id) != 0) {
+                goto error;
+            }
+            SCLogConfig("tunnel %u connected to tenant-id %u", tunnel_id, tenant_id);
+            mapping_cnt++;
+            continue;
+
+        bad_mapping:
+            if (failure_fatal)
+                goto error;
+        }
+    }
+    return mapping_cnt;
+
+error:
+    return 0;
+}
+
 static int DetectEngineMultiTenantSetupLoadLivedevMappings(
         const SCConfNode *mappings_root_node, bool failure_fatal)
 {
@@ -4591,6 +4729,14 @@ int DetectEngineMultiTenantSetup(const bool unix_socket)
 
             } else if (strcmp(handler, "direct") == 0) {
                 tenant_selector = master->tenant_selector = TENANT_SELECTOR_DIRECT;
+            } else if (strcmp(handler, "tunnel") == 0) {
+                if (SCConfGetNode("decoder.tunnels") == NULL) {
+                    SCLogError("No decoder.tunnels section, "
+                               "can't use multi-detect selector 'tunnel'");
+                    SCMutexUnlock(&master->lock);
+                    goto error;
+                }
+                tenant_selector = master->tenant_selector = TENANT_SELECTOR_TUNNEL;
             } else if (strcmp(handler, "device") == 0) {
                 tenant_selector = master->tenant_selector = TENANT_SELECTOR_LIVEDEV;
                 if (EngineModeIsIPS()) {
@@ -4631,6 +4777,17 @@ int DetectEngineMultiTenantSetup(const bool unix_socket)
                     } else {
                         SCLogWarning("no multi-detect mappings defined");
                     }
+                }
+            }
+        } else if (tenant_selector == TENANT_SELECTOR_TUNNEL) {
+            int mapping_cnt = DetectEngineMultiTenantSetupLoadTunnelMappings(
+                    mappings_root_node, failure_fatal);
+            if (mapping_cnt == 0) {
+                if (failure_fatal) {
+                    SCLogError("no multi-detect mappings defined");
+                    goto error;
+                } else {
+                    SCLogWarning("no multi-detect mappings defined");
                 }
             }
         } else if (tenant_selector == TENANT_SELECTOR_LIVEDEV) {
@@ -4762,6 +4919,26 @@ static uint32_t DetectEngineTenantGetIdFromLivedev(const void *ctx, const Packet
     return ld->tenant_id;
 }
 
+static uint32_t DetectEngineTenantGetIdFromTunnel(const void *ctx, const Packet *p)
+{
+    const DetectEngineThreadCtx *det_ctx = ctx;
+
+    if (p->tunnel_id == 0 || p->tunnel_id == PKT_TUNNEL_UNKNOWN)
+        return 0;
+
+    if (det_ctx == NULL || det_ctx->tenant_array == NULL || det_ctx->tenant_array_size == 0)
+        return 0;
+
+    /* not very efficient, but for now we're targeting only limited amounts.
+     * Can use hash/tree approach later. */
+    for (uint32_t x = 0; x < det_ctx->tenant_array_size; x++) {
+        if (det_ctx->tenant_array[x].traffic_id == p->tunnel_id)
+            return det_ctx->tenant_array[x].tenant_id;
+    }
+
+    return 0;
+}
+
 static int DetectEngineTenantRegisterSelector(
         enum DetectEngineTenantSelectors selector, uint32_t tenant_id, uint32_t traffic_id)
 {
@@ -4843,6 +5020,12 @@ int DetectEngineTenantRegisterLivedev(uint32_t tenant_id, int device_id)
 {
     return DetectEngineTenantRegisterSelector(
             TENANT_SELECTOR_LIVEDEV, tenant_id, (uint32_t)device_id);
+}
+
+int DetectEngineTenantRegisterTunnel(uint32_t tenant_id, uint16_t tunnel_id)
+{
+    return DetectEngineTenantRegisterSelector(
+            TENANT_SELECTOR_TUNNEL, tenant_id, (uint32_t)tunnel_id);
 }
 
 int DetectEngineTenantRegisterVlanId(uint32_t tenant_id, uint16_t vlan_id)
@@ -5645,9 +5828,25 @@ static int DetectEngineThreadCtxInitKeywordFailTest(void)
 
 #endif
 
+#ifdef UNITTESTS
+/** \test SIGMATCH_STATEFUL uses a unique bit and only stateful keywords set it */
+static int DetectEngineStatefulFlagTest01(void)
+{
+    FAIL_IF((SIGMATCH_STATEFUL & SIGMATCH_INFO_BITFLAGS_UINT) != 0);
+    FAIL_IF((SIGMATCH_STATEFUL & SIGMATCH_BAN_FIREWALL_RULE) != 0);
+    FAIL_IF((SIGMATCH_STATEFUL & SIGMATCH_BAN_FIREWALL_MODE) != 0);
+
+    FAIL_IF((sigmatch_table[DETECT_SSL_STATE].flags & SIGMATCH_STATEFUL) == 0);
+    FAIL_IF((sigmatch_table[DETECT_DNP3IND].flags & SIGMATCH_STATEFUL) != 0);
+
+    PASS;
+}
+#endif
+
 void DetectEngineRegisterTests(void)
 {
 #ifdef UNITTESTS
+    UtRegisterTest("DetectEngineStatefulFlagTest01", DetectEngineStatefulFlagTest01);
     UtRegisterTest("DetectEngineTest01", DetectEngineTest01);
     UtRegisterTest("DetectEngineTest02", DetectEngineTest02);
     UtRegisterTest("DetectEngineTest03", DetectEngineTest03);

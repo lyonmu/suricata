@@ -34,7 +34,6 @@
 #include "datasets-reputation.h"
 #include "datasets-context-json.h"
 #include "util-conf.h"
-#include "util-mem.h"
 #include "util-thash.h"
 #include "util-print.h"
 #include "util-byte.h"
@@ -780,6 +779,9 @@ void DatasetsDestroy(void)
         set = next;
     }
     sets = NULL;
+    // these resets are useful for stateless fuzzing
+    dataset_used_hashsize = 0;
+    set_ids = 0;
     DatasetUnlock();
     SCLogDebug("destroying datasets done: %p", sets);
 }

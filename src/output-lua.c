@@ -32,7 +32,6 @@
 #include "app-layer-ssl.h"
 #include "app-layer-ssh.h"
 #include "app-layer-parser.h"
-#include "util-time.h"
 #include "util-path.h"
 #include "util-lua.h"
 #include "util-lua-common.h"
@@ -61,6 +60,10 @@ typedef struct LogLuaCtx_ {
     SCMutex m;
     lua_State *luastate;
     int deinit_once;
+    /* invocation counter for the state's generation slot: the state is
+     * shared and the logger's mutex is held across the invocation, so
+     * the per-invocation bump is serialized */
+    uint64_t invocation_gen;
 } LogLuaCtx;
 
 typedef struct LogLuaThreadCtx_ {
@@ -78,13 +81,26 @@ static TmEcode LuaLogThreadDeinit(ThreadVars *t, void *data);
  *
  * NOTE: The flow (f) also referenced by p->flow is locked.
  */
-static int LuaTxLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow *f, void *alstate, void *txptr, uint64_t tx_id)
+static bool LuaTlsTxLogCondition(
+        ThreadVars *tv, const Packet *p, void *state, void *tx, uint64_t tx_id)
+{
+    /* keep in sync with the json-tls logger gate */
+    return SSLV3TxLogReady(tx);
+}
+
+static int LuaTxLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow *f, void *alstate,
+        void *txptr, uint64_t tx_id)
 {
     SCEnter();
 
     LogLuaThreadCtx *td = (LogLuaThreadCtx *)thread_data;
 
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     LuaStateSetPacket(td->lua_ctx->luastate, (Packet *)p);
@@ -99,6 +115,8 @@ static int LuaTxLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow 
     int retval = lua_pcall(td->lua_ctx->luastate, 1, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
 
     SCMutexUnlock(&td->lua_ctx->m);
@@ -111,13 +129,12 @@ static int LuaTxLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow 
  *  Hooks into the Streaming Logger API. Gets called for each chunk of new
  *  streaming data.
  */
-static int LuaStreamingLogger(ThreadVars *tv, void *thread_data, const Flow *f,
-        const uint8_t *data, uint32_t data_len, uint64_t tx_id, uint8_t flags)
+static int LuaStreamingLogger(ThreadVars *tv, void *thread_data, const Flow *f, const uint8_t *data,
+        uint32_t data_len, uint64_t tx_id, uint8_t flags)
 {
     SCEnter();
 
     void *txptr = NULL;
-    LuaStreamingBuffer b = { data, data_len, flags };
 
     SCLogDebug("flags %02x", flags);
 
@@ -128,13 +145,18 @@ static int LuaStreamingLogger(ThreadVars *tv, void *thread_data, const Flow *f,
 
     LogLuaThreadCtx *td = (LogLuaThreadCtx *)thread_data;
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
     lua_State *luastate = td->lua_ctx->luastate;
 
     LuaStateSetThreadVars(luastate, tv);
-    if (flags & OUTPUT_STREAMING_FLAG_TRANSACTION)
-        LuaStateSetTX(luastate, txptr, tx_id);
+    /* txptr is already NULL for non-transaction chunks: write the entry
+     * unconditionally so the registry cannot keep a previous tx */
+    LuaStateSetTX(luastate, txptr, txptr ? tx_id : 0);
     LuaStateSetFlow(luastate, (Flow *)f);
-    LuaStateSetStreamingBuffer(luastate, &b);
 
     /* prepare data to pass to script */
     lua_getglobal(luastate, "log");
@@ -159,6 +181,8 @@ static int LuaStreamingLogger(ThreadVars *tv, void *thread_data, const Flow *f,
     int retval = lua_pcall(luastate, 1, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
 
     SCMutexUnlock(&td->lua_ctx->m);
@@ -191,6 +215,11 @@ static int LuaPacketLoggerAlerts(ThreadVars *tv, void *thread_data, const Packet
 
     /* loop through alerts stored in the packet */
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
     uint16_t cnt;
     for (cnt = 0; cnt < p->alerts.cnt; cnt++) {
         const PacketAlert *pa = &p->alerts.alerts[cnt];
@@ -212,11 +241,13 @@ static int LuaPacketLoggerAlerts(ThreadVars *tv, void *thread_data, const Packet
         LuaStateSetPacketAlert(td->lua_ctx->luastate, (PacketAlert *)pa);
 
         /* prepare data to pass to script */
-        //lua_newtable(td->lua_ctx->luastate);
+        // lua_newtable(td->lua_ctx->luastate);
 
         int retval = lua_pcall(td->lua_ctx->luastate, 0, 0, 0);
         if (retval != 0) {
             SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+            /* a failed pcall leaves the error object on the stack */
+            lua_pop(td->lua_ctx->luastate, 1);
         }
     }
     SCMutexUnlock(&td->lua_ctx->m);
@@ -254,6 +285,11 @@ static int LuaPacketLogger(ThreadVars *tv, void *thread_data, const Packet *p)
 
     /* loop through alerts stored in the packet */
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
     lua_getglobal(td->lua_ctx->luastate, "log");
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
@@ -266,6 +302,8 @@ static int LuaPacketLogger(ThreadVars *tv, void *thread_data, const Packet *p)
     int retval = lua_pcall(td->lua_ctx->luastate, 1, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
     SCMutexUnlock(&td->lua_ctx->m);
 not_supported:
@@ -298,12 +336,20 @@ static int LuaFileLogger(ThreadVars *tv, void *thread_data, const Packet *p, con
     SCLogDebug("ff %p", ff);
 
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     LuaStateSetPacket(td->lua_ctx->luastate, (Packet *)p);
     LuaStateSetTX(td->lua_ctx->luastate, tx, tx_id);
     LuaStateSetFlow(td->lua_ctx->luastate, p->flow);
     LuaStateSetFile(td->lua_ctx->luastate, (File *)ff);
+    /* the file's container direction - on the EOF opposing-direction
+     * flush this is the packet's opposite direction */
+    LuaStateSetDirection(td->lua_ctx->luastate, (dir & STREAM_TOSERVER) ? 1 : 0);
 
     /* get the lua function to call */
     lua_getglobal(td->lua_ctx->luastate, "log");
@@ -311,6 +357,8 @@ static int LuaFileLogger(ThreadVars *tv, void *thread_data, const Packet *p, con
     int retval = lua_pcall(td->lua_ctx->luastate, 0, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
     SCMutexUnlock(&td->lua_ctx->m);
     return 0;
@@ -331,6 +379,11 @@ static int LuaFlowLogger(ThreadVars *tv, void *thread_data, Flow *f)
     SCLogDebug("f %p", f);
 
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
 
     LuaStateSetThreadVars(td->lua_ctx->luastate, tv);
     LuaStateSetFlow(td->lua_ctx->luastate, f);
@@ -341,12 +394,12 @@ static int LuaFlowLogger(ThreadVars *tv, void *thread_data, Flow *f)
     int retval = lua_pcall(td->lua_ctx->luastate, 0, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
     SCMutexUnlock(&td->lua_ctx->m);
     return 0;
 }
-
-
 
 static int LuaStatsLogger(ThreadVars *tv, void *thread_data, const StatsTable *st)
 {
@@ -354,6 +407,11 @@ static int LuaStatsLogger(ThreadVars *tv, void *thread_data, const StatsTable *s
     LogLuaThreadCtx *td = (LogLuaThreadCtx *)thread_data;
 
     SCMutexLock(&td->lua_ctx->m);
+    /* a peer thread's deinit may have closed the shared state */
+    if (td->lua_ctx->luastate == NULL) {
+        SCMutexUnlock(&td->lua_ctx->m);
+        SCReturnInt(0);
+    }
 
     lua_State *luastate = td->lua_ctx->luastate;
     /* get the lua function to call */
@@ -394,10 +452,11 @@ static int LuaStatsLogger(ThreadVars *tv, void *thread_data, const StatsTable *s
     int retval = lua_pcall(td->lua_ctx->luastate, 1, 0, 0);
     if (retval != 0) {
         SCLogInfo("failed to run script: %s", lua_tostring(td->lua_ctx->luastate, -1));
+        /* a failed pcall leaves the error object on the stack */
+        lua_pop(td->lua_ctx->luastate, 1);
     }
     SCMutexUnlock(&td->lua_ctx->m);
     return 0;
-
 }
 
 typedef struct LogLuaScriptOptions_ {
@@ -494,9 +553,14 @@ static int LuaScriptInit(const char *filename, LogLuaScriptOptions *options, Log
     lua_pushnil(luastate);
     const char *k, *v;
     while (lua_next(luastate, -2)) {
-        k = lua_tostring(luastate, -2);
-        if (k == NULL)
+        /* only string keys name an option. lua_tostring() on a number
+         * key converts it in place and the next lua_next() then raises
+         * "invalid key to 'next'" outside any pcall (abort) */
+        if (lua_type(luastate, -2) != LUA_TSTRING) {
+            lua_pop(luastate, 1);
             continue;
+        }
+        k = lua_tostring(luastate, -2);
 
         v = lua_tostring(luastate, -1);
         lua_pop(luastate, 1);
@@ -517,13 +581,13 @@ static int LuaScriptInit(const char *filename, LogLuaScriptOptions *options, Log
             }
         } else if (strcmp(k, "protocol") == 0 && strcmp(v, "http") == 0)
             options->alproto = ALPROTO_HTTP1;
-        else if (strcmp(k,"protocol") == 0 && strcmp(v, "dns") == 0)
+        else if (strcmp(k, "protocol") == 0 && strcmp(v, "dns") == 0)
             options->alproto = ALPROTO_DNS;
-        else if (strcmp(k,"protocol") == 0 && strcmp(v, "tls") == 0)
+        else if (strcmp(k, "protocol") == 0 && strcmp(v, "tls") == 0)
             options->alproto = ALPROTO_TLS;
-        else if (strcmp(k,"protocol") == 0 && strcmp(v, "ssh") == 0)
+        else if (strcmp(k, "protocol") == 0 && strcmp(v, "ssh") == 0)
             options->alproto = ALPROTO_SSH;
-        else if (strcmp(k,"protocol") == 0 && strcmp(v, "smtp") == 0)
+        else if (strcmp(k, "protocol") == 0 && strcmp(v, "smtp") == 0)
             options->alproto = ALPROTO_SMTP;
         else if (strcmp(k, "protocol") == 0 && strcmp(v, "ntp") == 0)
             options->alproto = ALPROTO_NTP;
@@ -623,7 +687,8 @@ error:
     return NULL;
 }
 
-static void LogLuaSubFree(OutputCtx *oc) {
+static void LogLuaSubFree(OutputCtx *oc)
+{
     if (oc->data)
         SCFree(oc->data);
     SCFree(oc);
@@ -673,6 +738,9 @@ static OutputInitResult OutputLuaLogInitSub(SCConfNode *conf, OutputCtx *parent_
     if (lua_ctx->luastate == NULL)
         goto error;
 
+    /* the ctx owns this state's invocation counter */
+    LuaStateSetInvocationGen(lua_ctx->luastate, &lua_ctx->invocation_gen);
+
     SCLogDebug("lua_ctx %p", lua_ctx);
 
     output_ctx->data = lua_ctx;
@@ -694,7 +762,7 @@ static void LogLuaMasterFree(OutputCtx *oc)
         SCFree(oc->data);
 
     OutputModule *om, *tom;
-    TAILQ_FOREACH_SAFE(om, &oc->submodules, entries, tom) {
+    TAILQ_FOREACH_SAFE (om, &oc->submodules, entries, tom) {
         SCFree(om);
     }
     SCFree(oc);
@@ -749,13 +817,13 @@ static OutputInitResult OutputLuaLogInit(SCConfNode *conf)
 
     /* check the enables scripts and set them up as submodules */
     SCConfNode *script;
-    TAILQ_FOREACH(script, &scripts->head, next) {
+    TAILQ_FOREACH (script, &scripts->head, next) {
         SCLogInfo("enabling script %s", script->val);
         LogLuaScriptOptions opts;
         memset(&opts, 0x00, sizeof(opts));
 
         char path[PATH_MAX] = "";
-        snprintf(path, sizeof(path),"%s%s%s", dir, strlen(dir) ? "/" : "", script->val);
+        snprintf(path, sizeof(path), "%s%s%s", dir, strlen(dir) ? "/" : "", script->val);
         SCLogDebug("script full path %s", path);
 
         int r = LuaScriptInit(path, &opts, master_config);
@@ -793,8 +861,7 @@ static OutputInitResult OutputLuaLogInit(SCConfNode *conf)
         } else if (opts.alproto == ALPROTO_TLS) {
             om->TxLogFunc = LuaTxLogger;
             om->alproto = ALPROTO_TLS;
-            om->tc_log_progress = TLS_STATE_SERVER_HANDSHAKE_DONE;
-            om->ts_log_progress = TLS_STATE_CLIENT_HANDSHAKE_DONE;
+            om->TxLogCondition = LuaTlsTxLogCondition;
             SCAppLayerParserRegisterLogger(IPPROTO_TCP, ALPROTO_TLS);
         } else if (opts.alproto == ALPROTO_DNS) {
             om->TxLogFunc = LuaTxLogger;
@@ -870,20 +937,37 @@ error:
  */
 static void OutputLuaLogDoDeinit(LogLuaCtx *lua_ctx)
 {
+    /* called with lua_ctx->m held (LuaLogThreadDeinit): the state is
+     * shared by all threads of the submodule, and the log paths hold
+     * that same mutex while logging, so a NULLed state is never used
+     * and a logging state is never closed underneath a logger */
     lua_State *luastate = lua_ctx->luastate;
 
-    lua_getglobal(luastate, "deinit");
-    if (lua_type(luastate, -1) != LUA_TFUNCTION) {
-        SCLogError("no deinit function in script");
-        return;
-    }
-    //LuaPrintStack(luastate);
+    /* the context slots name the last callback's objects, which the
+     * engine may have freed by now (the packet pool is destroyed before
+     * the thread deinit): clear them so a handle used from deinit() or
+     * a close-time finalizer fails closed */
+    LuaStateSetPacket(luastate, NULL);
+    LuaStateSetPacketAlert(luastate, NULL);
+    LuaStateSetTX(luastate, NULL, 0);
+    LuaStateSetFlow(luastate, NULL);
+    LuaStateSetFile(luastate, NULL);
 
-    if (lua_pcall(luastate, 0, 0, 0) != 0) {
-        SCLogError("couldn't run script 'deinit' function: %s", lua_tostring(luastate, -1));
-        return;
+    lua_getglobal(luastate, "deinit");
+    if (lua_type(luastate, -1) == LUA_TFUNCTION) {
+        if (lua_pcall(luastate, 0, 0, 0) != 0) {
+            SCLogError("couldn't run script 'deinit' function: %s", lua_tostring(luastate, -1));
+            lua_pop(luastate, 1);
+        }
+    } else {
+        SCLogError("no deinit function in script");
+        lua_pop(luastate, 1);
     }
+
+    /* returned on every path: a deinit failure must not leak the
+     * (unsandboxed) state and its C-side contexts */
     LuaReturnState(luastate);
+    lua_ctx->luastate = NULL;
 }
 
 /** \internal
@@ -936,7 +1020,8 @@ static TmEcode LuaLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
-void LuaLogRegister(void) {
+void LuaLogRegister(void)
+{
     /* register as separate module */
     OutputRegisterModule(MODULE_NAME, "lua", OutputLuaLogInit);
 }

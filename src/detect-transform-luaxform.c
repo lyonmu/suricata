@@ -44,6 +44,15 @@ static void TransformLuaxform(
 
 #define LUAXFORM_MAX_ARGS 10
 
+/* rate-limit the transform error warning to one per thread per type.
+ * tlua is a DetectLuaThreadData, shared with the lua rule path - one
+ * flags namespace: 0-4 option bits, 23-26 that path's sticky bits,
+ * so the luaxform sticky bits take 27-30 */
+#define LFLAG_ERROR_LOGGED             BIT_U32(27)
+#define LFLAG_BLOCKED_FUNCTION_LOGGED  BIT_U32(28)
+#define LFLAG_INSTRUCTION_LIMIT_LOGGED BIT_U32(29)
+#define LFLAG_MEMORY_LIMIT_LOGGED      BIT_U32(30)
+
 typedef struct DetectLuaxformData {
     int thread_ctx_id;
     int allow_restricted_functions;
@@ -208,6 +217,9 @@ static void *DetectLuaxformThreadInit(void *data)
         goto error;
     }
 
+    /* setup calls get a fresh instruction budget so a low max-instructions
+     * bounds per-packet work, not engine start or reload */
+    SCLuaSbResetInstructionCounter(t->luastate);
     /* prime the script (or something) */
     if (lua_pcall(t->luastate, 0, 0, 0) != 0) {
         SCLogError("couldn't prime file: %s", lua_tostring(t->luastate, -1));
@@ -217,6 +229,7 @@ static void *DetectLuaxformThreadInit(void *data)
     /* when present: thread_init call */
     lua_getglobal(t->luastate, "thread_init");
     if (lua_isfunction(t->luastate, -1)) {
+        SCLuaSbResetInstructionCounter(t->luastate);
         if (lua_pcall(t->luastate, 0, 0, 0) != 0) {
             SCLogError("couldn't run script 'thread_init' function: %s",
                     lua_tostring(t->luastate, -1));
@@ -277,6 +290,15 @@ static int DetectTransformLuaxformSetup(DetectEngineCtx *de_ctx, Signature *s, c
     (void)SCConfGetInt("security.lua.max-bytes", &lua_alloc_limit);
     (void)SCConfGetInt("security.lua.max-instructions", &lua_instruction_limit);
     (void)SCConfGetBool("security.lua.allow-restricted-functions", &allow_restricted_functions);
+
+    /* a negative value would wrap the cap below the baseline and fail
+     * every call silently; 0 means unlimited */
+    if (lua_alloc_limit < 0) {
+        SCLogError("security.lua.max-bytes must be non-negative (got %" PRIdMAX "), "
+                   "use 0 for no limit",
+                lua_alloc_limit);
+        goto error;
+    }
 
     lua->alloc_limit = lua_alloc_limit;
     lua->instruction_limit = lua_instruction_limit;
@@ -346,23 +368,86 @@ static void TransformLuaxform(
     SCLuaSbResetInstructionCounter(tlua->luastate);
 
     if (LUA_OK != lua_pcall(tlua->luastate, 2, 2, 0)) {
-        SCLogDebug("error calling lua script: %s", lua_tostring(tlua->luastate, -1));
+        const char *reason = lua_tostring(tlua->luastate, -1);
+        SCLuaSbState *context = SCLuaSbGetContext(tlua->luastate);
+        uint32_t flag = LFLAG_ERROR_LOGGED;
+        /* mirror DetectLuaRunMatch: the aggregate counts every failure,
+         * a sandbox failure adds its category counter */
+        StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_errors);
+        if (context->blocked_function_error) {
+            StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_blocked_function_errors);
+            flag = LFLAG_BLOCKED_FUNCTION_LOGGED;
+        } else if (context->instruction_count_error) {
+            StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_instruction_limit_errors);
+            flag = LFLAG_INSTRUCTION_LIMIT_LOGGED;
+        } else if (context->memory_limit_error) {
+            StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_memory_limit_errors);
+            flag = LFLAG_MEMORY_LIMIT_LOGGED;
+            reason = "memory limit exceeded";
+        }
+        if (!(tlua->flags & flag)) {
+            SCLogWarning("luaxform '%s' failed to run successfully: %s "
+                         "(buffer keeps the untransformed data)",
+                    lua->filename, reason);
+            tlua->flags |= flag;
+        }
     } else {
         /* Lua transform functions must return 2 values: buffer and length */
         int return_value_count = lua_gettop(tlua->luastate);
         if (return_value_count != 2) {
-            SCLogDebug("Error: expected 2 return values but got %d", return_value_count);
+            StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_errors);
+            if (!(tlua->flags & LFLAG_ERROR_LOGGED)) {
+                SCLogWarning("luaxform '%s': expected 2 return values (buffer, length) "
+                             "but got %d; keeping the untransformed buffer",
+                        lua->filename, return_value_count);
+                tlua->flags |= LFLAG_ERROR_LOGGED;
+            }
             goto error;
         }
 
         if (lua_isstring(tlua->luastate, -2)) {
-            const char *transformed_buffer = lua_tostring(tlua->luastate, -2);
-            lua_Integer transformed_buffer_byte_count = lua_tointeger(tlua->luastate, -1);
-            if (transformed_buffer != NULL && transformed_buffer_byte_count > 0)
+            size_t real_len = 0;
+            const char *transformed_buffer = lua_tolstring(tlua->luastate, -2, &real_len);
+            int isnum = 0;
+            lua_Integer transformed_buffer_byte_count = lua_tointegerx(tlua->luastate, -1, &isnum);
+            /* the returned length is script-controlled: validate it against
+             * the real string length before copying. isnum keeps a missing
+             * second return (lua_pcall pads it with nil) from reading as a
+             * valid zero length */
+            if (transformed_buffer == NULL || !isnum || transformed_buffer_byte_count < 0 ||
+                    (size_t)transformed_buffer_byte_count > real_len ||
+                    (size_t)transformed_buffer_byte_count > UINT32_MAX) {
+                StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_errors);
+                if (!(tlua->flags & LFLAG_ERROR_LOGGED)) {
+                    if (isnum) {
+                        SCLogWarning("luaxform '%s' returned an invalid length "
+                                     "%" PRIi64 " (string len %zu); keeping the "
+                                     "untransformed buffer",
+                                lua->filename, (int64_t)transformed_buffer_byte_count, real_len);
+                    } else {
+                        SCLogWarning("luaxform '%s' returned a non-numeric length; keeping "
+                                     "the untransformed buffer",
+                                lua->filename);
+                    }
+                    tlua->flags |= LFLAG_ERROR_LOGGED;
+                }
+            } else if (transformed_buffer_byte_count > 0) {
+                /* 0 is a valid empty result: the buffer stays as it was. A
+                 * zero-length copy would empty it only when the thread's
+                 * buffer was expanded before (history dependent) */
                 InspectionBufferCopy(buffer, (uint8_t *)transformed_buffer,
                         (uint32_t)transformed_buffer_byte_count);
-            SCLogDebug("transform returns [nbytes %d] \"%p\"",
-                    (uint32_t)transformed_buffer_byte_count, transformed_buffer);
+                SCLogDebug("transform returns [nbytes %" PRIi64 "] \"%p\"",
+                        (int64_t)transformed_buffer_byte_count, transformed_buffer);
+            }
+        } else {
+            StatsCounterIncr(&det_ctx->tv->stats, det_ctx->lua_transform_errors);
+            if (!(tlua->flags & LFLAG_ERROR_LOGGED)) {
+                SCLogWarning("luaxform '%s' returned a non-string buffer; keeping the "
+                             "untransformed buffer",
+                        lua->filename);
+                tlua->flags |= LFLAG_ERROR_LOGGED;
+            }
         }
     }
 

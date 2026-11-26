@@ -46,14 +46,12 @@
 #include "output-json-alert.h"
 #include "output-json-drop.h"
 
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-classification-config.h"
 #include "util-privs.h"
 #include "util-print.h"
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
-#include "util-time.h"
 #include "util-buffer.h"
 
 #include "action-globals.h"

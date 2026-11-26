@@ -30,7 +30,6 @@
 #include "threadvars.h"
 #include "tm-threads.h"
 
-#include "util-unittest.h"
 #include "util-buffer.h"
 #include "util-debug.h"
 #include "util-byte.h"
@@ -60,9 +59,9 @@ typedef struct LogMQTTLogThread_ {
     OutputJsonThreadCtx *ctx;
 } LogMQTTLogThread;
 
-bool JsonMQTTAddMetadata(void *vtx, SCJsonBuilder *js)
+bool JsonMQTTAddMetadata(const void *vtx, void *js)
 {
-    return SCMqttLoggerLog(vtx, MQTT_DEFAULT_FLAGS, MQTT_DEFAULT_MAXLOGLEN, js);
+    return SCMqttLoggerLog((void *)vtx, MQTT_DEFAULT_FLAGS, MQTT_DEFAULT_MAXLOGLEN, js);
 }
 
 static int JsonMQTTLogger(ThreadVars *tv, void *thread_data,

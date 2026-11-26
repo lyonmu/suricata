@@ -32,7 +32,6 @@ typedef struct SCFlowStorageId SCFlowStorageId;
 #include "util-exception-policy.h"
 #include "util-exception-policy-types.h"
 #include "util-var.h"
-#include "util-optimize.h"
 #include "util-validate.h"
 #include "app-layer-protos.h"
 #include "flow-bindgen.h"
@@ -126,6 +125,11 @@ typedef struct AppLayerParserState_ AppLayerParserState;
 #define FLOW_ACTION_BY_FIREWALL BIT_U64(32)
 /** Flow action issued by exception policy */
 #define FLOW_ACTION_BY_EXCEPTION_POLICY BIT_U64(33)
+
+/** The app layer was disabled mid-flow: run the tx loggers once at the
+ *  next output stage, as no further app-layer update will reach them.
+ *  Consumed by the tx logger. */
+#define FLOW_APP_LAYER_FLUSH_PENDING BIT_U64(34)
 
 /* File flags */
 
@@ -312,6 +316,7 @@ typedef struct FlowKey_
     uint8_t recursion_level;
     uint16_t livedev_id;
     uint16_t vlan_id[VLAN_MAX_LAYERS];
+    uint16_t tunnel_id;
 } FlowKey;
 
 typedef struct FlowAddress_ {
@@ -376,6 +381,7 @@ typedef struct Flow_
     };
     uint8_t proto; /**< ip proto of the flow */
     uint8_t recursion_level;
+    uint16_t tunnel_id;
     uint16_t vlan_id[VLAN_MAX_LAYERS];
 
     uint8_t vlan_idx;
@@ -593,6 +599,18 @@ static inline void *FlowGetAppState(const Flow *f)
  *
  * \param f Flow to set the flag in
  */
+/** \brief mark the flow dropped and schedule the pending tx loggers.
+ *
+ * A flow scope drop ends the app layer without a further update: the txs
+ * still pending (e.g. the ssh success record) must be logged once. The
+ * output stage of the dropping packet consumes the flag. */
+static inline void FlowSetDropAction(Flow *f, const uint64_t by)
+{
+    f->flags |= FLOW_ACTION_DROP | by;
+    if (f->alparser != NULL)
+        f->flags |= FLOW_APP_LAYER_FLUSH_PENDING;
+}
+
 static inline void FlowSetNoPayloadInspectionFlag(Flow *f)
 {
     SCEnter();

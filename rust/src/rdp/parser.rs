@@ -32,7 +32,7 @@ use crate::rdp::util::{le_slice_to_string, parse_per_length_determinant, utf7_sl
 use crate::rdp::windows;
 use nom8::bits::streaming::take as take_bits;
 use nom8::bytes::streaming::{tag, take};
-use nom8::combinator::{map, map_opt, map_res, opt, verify};
+use nom8::combinator::{complete, map, map_opt, map_res, opt, verify};
 use nom8::error::{make_error, ErrorKind};
 use nom8::multi::length_data;
 use nom8::number::streaming::{be_u16, be_u8, le_u16, le_u32, le_u8};
@@ -445,7 +445,7 @@ pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt, RdpError> {
     let (i4, data) = take(sz).parse(i3)?;
 
     let opt1: Option<T123TpktChild> = {
-        match opt(parse_x224_connection_request_class_0).parse(data) {
+        match opt(complete(parse_x224_connection_request_class_0)).parse(data) {
             Ok((_remainder, opt)) => opt.map(T123TpktChild::X224ConnectionRequest),
             Err(e) => return Err(e),
         }
@@ -453,7 +453,7 @@ pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt, RdpError> {
 
     let opt2: Option<T123TpktChild> = match opt1 {
         Some(x) => Some(x),
-        None => match opt(parse_x224_connection_confirm_class_0).parse(data) {
+        None => match opt(complete(parse_x224_connection_confirm_class_0)).parse(data) {
             Ok((_remainder, opt)) => opt.map(T123TpktChild::X224ConnectionConfirm),
             Err(e) => return Err(e),
         },
@@ -461,7 +461,7 @@ pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt, RdpError> {
 
     let opt3: Option<T123TpktChild> = match opt2 {
         Some(x) => Some(x),
-        None => match opt(parse_x223_data_class_0).parse(data) {
+        None => match opt(complete(parse_x223_data_class_0)).parse(data) {
             Ok((_remainder, opt)) => opt.map(T123TpktChild::Data),
             Err(e) => return Err(e),
         },
@@ -680,7 +680,7 @@ fn parse_negotiation_response(i: &[u8]) -> IResult<&[u8], NegotiationResponse, R
     let (i, flags) = map_opt(le_u8, NegotiationResponseFlags::from_bits).parse(i)?;
     // u8, u8, u16, and u32 give _length of 8
     let (i, _length) = verify(le_u16, |&x| x == 8).parse(i)?;
-    let (i, protocol) = map_opt(le_u32, num::FromPrimitive::from_u32).parse(i)?;
+    let (i, protocol) = map_opt(le_u32, num_traits::FromPrimitive::from_u32).parse(i)?;
     Ok((i, NegotiationResponse { flags, protocol }))
 }
 
@@ -693,7 +693,7 @@ fn parse_negotiation_failure(i: &[u8]) -> IResult<&[u8], NegotiationFailure, Rdp
     let (i, _flags) = le_u8(i)?;
     // u8, u8, u16, and u32 give _length of 8
     let (i, _length) = verify(le_u16, |&x| x == 8).parse(i)?;
-    let (i, code) = map_opt(le_u32, num::FromPrimitive::from_u32).parse(i)?;
+    let (i, code) = map_opt(le_u32, num_traits::FromPrimitive::from_u32).parse(i)?;
     Ok((i, NegotiationFailure { code }))
 }
 
@@ -811,15 +811,15 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     // less u16, u16
     let (i2, sz) = map_opt(le_u16, |x: u16| x.checked_sub(4)).parse(i1)?;
     let (i3, data) = take(sz).parse(i2)?;
-    let (j1, version) = map(le_u32, num::FromPrimitive::from_u32).parse(data)?;
+    let (j1, version) = map(le_u32, num_traits::FromPrimitive::from_u32).parse(data)?;
     let (j2, desktop_width) = le_u16(j1)?;
     let (j3, desktop_height) = le_u16(j2)?;
-    let (j4, color_depth) = map(le_u16, num::FromPrimitive::from_u16).parse(j3)?;
-    let (j5, sas_sequence) = map(le_u16, num::FromPrimitive::from_u16).parse(j4)?;
+    let (j4, color_depth) = map(le_u16, num_traits::FromPrimitive::from_u16).parse(j3)?;
+    let (j5, sas_sequence) = map(le_u16, num_traits::FromPrimitive::from_u16).parse(j4)?;
     let (j6, keyboard_layout) = le_u32(j5)?;
     let (j7, client_build) = map(le_u32, windows::build_number_to_os).parse(j6)?;
     let (j8, client_name) = map_res(take(32_usize), le_slice_to_string).parse(j7)?;
-    let (j9, keyboard_type) = map(le_u32, num::FromPrimitive::from_u32).parse(j8)?;
+    let (j9, keyboard_type) = map(le_u32, num_traits::FromPrimitive::from_u32).parse(j8)?;
     let (j10, keyboard_subtype) = le_u32(j9)?;
     let (j11, keyboard_function_key) = le_u32(j10)?;
     let (j12, ime_file_name) = map_res(take(64_usize), le_slice_to_string).parse(j11)?;
@@ -829,7 +829,9 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     //
 
     let (j13, post_beta2_color_depth) =
-        match opt(map_opt(le_u16, num::FromPrimitive::from_u16)).parse(j12) as IResult<&[u8], _> {
+        match opt(map_opt(le_u16, num_traits::FromPrimitive::from_u16)).parse(j12)
+            as IResult<&[u8], _>
+        {
             Ok((rem, obj)) => (rem, obj),
             _ => (j12, None),
         };
@@ -853,7 +855,8 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j16, high_color_depth) = match serial_number {
         None => (j15, None),
         Some(_) => {
-            match opt(map_opt(le_u16, num::FromPrimitive::from_u16)).parse(j15) as IResult<&[u8], _>
+            match opt(map_opt(le_u16, num_traits::FromPrimitive::from_u16)).parse(j15)
+                as IResult<&[u8], _>
             {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j15, None),
@@ -898,7 +901,9 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j20, connection_hint) = match client_dig_product_id {
         None => (j19, None),
         Some(_) => {
-            match opt(map_opt(le_u8, num::FromPrimitive::from_u8)).parse(j19) as IResult<&[u8], _> {
+            match opt(map_opt(le_u8, num_traits::FromPrimitive::from_u8)).parse(j19)
+                as IResult<&[u8], _>
+            {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j19, None),
             }
@@ -942,7 +947,8 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j25, desktop_orientation) = match desktop_physical_height {
         None => (j24, None),
         Some(_) => {
-            match opt(map_opt(le_u16, num::FromPrimitive::from_u16)).parse(j24) as IResult<&[u8], _>
+            match opt(map_opt(le_u16, num_traits::FromPrimitive::from_u16)).parse(j24)
+                as IResult<&[u8], _>
             {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j24, None),
@@ -1029,7 +1035,7 @@ fn parse_cs_net(input: &[u8]) -> IResult<&[u8], CsNet> {
 // cf. rdp-spec, section 2.2.1.3.4
 fn parse_cs_unknown(i: &[u8]) -> IResult<&[u8], CsUnknown> {
     let (i, typ) = map_opt(le_u16, |x| {
-        let opt: Option<CsType> = num::FromPrimitive::from_u16(x);
+        let opt: Option<CsType> = num_traits::FromPrimitive::from_u16(x);
         match opt {
             // an unknown type must not be present in CsType
             Some(_) => None,
@@ -1397,7 +1403,7 @@ mod tests_negotiate_incomplete_49350 {
     fn test_negotiate_incomplete() {
         let neg_req_bytes = &BYTES[NEG_REQ_BEGIN..NEG_REQ_END - 1];
         assert_eq!(
-            // fails: map_opt!(le_u32, num::FromPrimitive::from_u32)?
+            // fails: map_opt!(le_u32, num_traits::FromPrimitive::from_u32)?
             Err(Err::Incomplete(Needed::new(1))),
             parse_negotiation_request(neg_req_bytes)
         )
@@ -1464,5 +1470,60 @@ mod tests_core_incomplete_49350 {
             Err(Err::Incomplete(Needed::new(1))),
             parse_mcs_connect(connect_bytes)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests_tpkt_overrun_8838 {
+    use crate::rdp::parser::*;
+
+    /// mcs connect request whose CS_CORE block claims 0xff bytes, but the
+    /// tpkt payload ends right after the CS_CORE header
+    static CS_CORE_OVERRUN: [u8; 18] = [
+        0x03, 0x00, 0x00, 0x12, 0x02, 0xf0, 0x80, 0x7f, 0x65, 0x44, 0x75, 0x63, 0x61, 0x04, 0x01,
+        0xc0, 0xff, 0x00,
+    ];
+
+    #[test]
+    fn test_t123_x223_cs_core_overrun() {
+        let bytes = &CS_CORE_OVERRUN[..];
+        let expected = T123Tpkt {
+            child: T123TpktChild::Raw(bytes[4..].to_vec()),
+        };
+        assert_eq!(Ok((&[][..], expected)), parse_t123_tpkt(bytes));
+    }
+
+    #[test]
+    fn test_t123_x224_negotiate_overrun() {
+        // x.224 connection request whose single payload byte is the start of
+        // a negotiation request
+        let bytes: &[u8] = &[
+            0x03, 0x00, 0x00, 0x0c, 0x07, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ];
+        let expected = T123Tpkt {
+            child: T123TpktChild::Raw(bytes[4..].to_vec()),
+        };
+        assert_eq!(Ok((&[][..], expected)), parse_t123_tpkt(bytes));
+    }
+
+    #[test]
+    fn test_t123_x224_confirm_overrun() {
+        // x.224 connection confirm whose single payload byte is the start of
+        // a negotiation response
+        let bytes: &[u8] = &[
+            0x03, 0x00, 0x00, 0x0c, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+        ];
+        let expected = T123Tpkt {
+            child: T123TpktChild::Raw(bytes[4..].to_vec()),
+        };
+        assert_eq!(Ok((&[][..], expected)), parse_t123_tpkt(bytes));
+    }
+
+    #[test]
+    fn test_t123_overrun_keeps_remainder() {
+        let mut bytes = CS_CORE_OVERRUN.to_vec();
+        bytes.extend_from_slice(&[0x03, 0x00]);
+        let (remainder, _tpkt) = parse_t123_tpkt(&bytes).expect("tpkt is complete");
+        assert_eq!(&[0x03, 0x00][..], remainder);
     }
 }

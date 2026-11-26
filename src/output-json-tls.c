@@ -35,7 +35,6 @@
 #include "threadvars.h"
 #include "util-debug.h"
 #include "util-ja3.h"
-#include "util-time.h"
 
 #define LOG_TLS_FIELD_VERSION          BIT_U64(0)
 #define LOG_TLS_FIELD_SUBJECT          BIT_U64(1)
@@ -204,7 +203,7 @@ static void JsonTlsLogSerial(SCJsonBuilder *js, SSLState *ssl_state)
 
 static void JsonTlsLogVersion(SCJsonBuilder *js, SSLState *ssl_state)
 {
-    char ssl_version[SSL_VERSION_MAX_STRLEN];
+    char ssl_version[SSL_VERSION_MAX_STRLEN] = "Unknown";
     /* log server version, but fall back to client if we don't have it yet */
     if (ssl_state->server_connp.version != 0) {
         SSLVersionToString(ssl_state->server_connp.version, ssl_version);
@@ -520,7 +519,7 @@ static void JsonTlsLogFields(SCJsonBuilder *js, SSLState *ssl_state, uint64_t fi
     }
 }
 
-bool JsonTlsLogJSONExtended(void *vtx, SCJsonBuilder *tjs)
+bool JsonTlsLogJSONExtended(const void *vtx, void *tjs)
 {
     SSLState *state = (SSLState *)vtx;
     SCJbOpenObject(tjs, "tls");
@@ -729,10 +728,19 @@ static OutputInitResult OutputTlsLogInitSub(SCConfNode *conf, OutputCtx *parent_
     return result;
 }
 
+static bool TlsTxLogCondition(
+        ThreadVars *tv, const Packet *p, void *state, void *tx, uint64_t tx_id)
+{
+    /* log once the event's content is final, not when both directions
+     * report handshake-done: state completeness is not a logging
+     * dependency (EOF still flushes unlogged txes) */
+    return SSLV3TxLogReady(tx);
+}
+
 void JsonTlsLogRegister (void)
 {
     /* register as child of eve-log */
-    OutputRegisterTxSubModuleWithProgress(LOGGER_JSON_TX, "eve-log", "JsonTlsLog", "eve-log.tls",
-            OutputTlsLogInitSub, ALPROTO_TLS, JsonTlsLogger, TLS_STATE_SERVER_HANDSHAKE_DONE,
-            TLS_STATE_CLIENT_HANDSHAKE_DONE, JsonTlsLogThreadInit, JsonTlsLogThreadDeinit);
+    OutputRegisterTxSubModuleWithCondition(LOGGER_JSON_TX, "eve-log", "JsonTlsLog", "eve-log.tls",
+            OutputTlsLogInitSub, ALPROTO_TLS, JsonTlsLogger, TlsTxLogCondition,
+            JsonTlsLogThreadInit, JsonTlsLogThreadDeinit);
 }

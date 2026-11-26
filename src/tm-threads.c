@@ -42,7 +42,6 @@
 #include "util-debug.h"
 #include "util-privs.h"
 #include "util-cpu.h"
-#include "util-optimize.h"
 #include "util-profiling.h"
 #include "util-signal.h"
 #include "queue.h"
@@ -360,7 +359,14 @@ error:
 }
 
 /**
- * Also returns if the kill flag is set.
+ * Wait for the thread to be unpaused.
+ *
+ * A thread killed while still in the initial pause skips its main loop,
+ * except mgmt threads (TVT_MGMT): they run one pass to do final work
+ * (e.g. the last stats output) - their loops test THV_KILL and exit
+ * after the pass. RX/worker loops have no top KILL test and would do
+ * real work during teardown (a pcap-file pass dispatches into a pipeline
+ * being torn down), so they keep skipping.
  */
 bool TmThreadsWaitForUnpause(ThreadVars *tv)
 {
@@ -370,8 +376,10 @@ bool TmThreadsWaitForUnpause(ThreadVars *tv)
         while (TmThreadsCheckFlag(tv, THV_PAUSE)) {
             SleepUsec(100);
 
-            if (TmThreadsCheckFlag(tv, THV_KILL))
-                return false;
+            if (TmThreadsCheckFlag(tv, THV_KILL)) {
+                TmThreadsUnsetFlag(tv, THV_PAUSED);
+                return tv->type == TVT_MGMT;
+            }
         }
 
         TmThreadsUnsetFlag(tv, THV_PAUSED);
@@ -1721,6 +1729,7 @@ TmEcode TmThreadSpawn(ThreadVars *tv)
     }
 
     int rc = pthread_create(&tv->t, &attr, tv->tm_func, (void *)tv);
+    pthread_attr_destroy(&attr);
     if (rc) {
         FatalError("Unable to create thread %s with pthread_create(): retval %d: %s", tv->name, rc,
                 strerror(errno));
@@ -1733,6 +1742,7 @@ TmEcode TmThreadSpawn(ThreadVars *tv)
             void *stack_addr;
             pthread_attr_getstack(&attr, &stack_addr, &stack_size);
             SCLogDebug("stack: %p;  size %" PRIu64, stack_addr, (uintmax_t)stack_size);
+            pthread_attr_destroy(&attr);
         } else {
             SCLogDebug("Unable to retrieve current stack-size for display; return code from "
                        "pthread_getattr_np() is %" PRId32,
@@ -2425,3 +2435,73 @@ void TmThreadsInjectFlowById(Flow *f, const int id)
     }
     BUG_ON(1);
 }
+
+#ifdef UNITTESTS
+#include "util-unittest-helper.h"
+#include <pthread.h>
+
+static void *UnpauseHelper(void *arg)
+{
+    ThreadVars *tv = (ThreadVars *)arg;
+    /* only unpause once the caller is in the pause wait: THV_PAUSED is
+     * set by the caller on entry, so the fixed-delay race where the
+     * caller is descheduled past the unpause window cannot happen */
+    while (!TmThreadsCheckFlag(tv, THV_PAUSED)) {
+        SleepUsec(100);
+    }
+    TmThreadsUnsetFlag(tv, THV_PAUSE);
+    return NULL;
+}
+
+static int TmThreadsTestWaitForUnpause01(void)
+{
+    ThreadVars th_v;
+    memset(&th_v, 0, sizeof(th_v));
+    th_v.type = TVT_MGMT;
+
+    /* killed while still in the initial pause: mgmt threads must still
+     * run their main loop once to do final work */
+    TmThreadsSetFlag(&th_v, THV_PAUSE);
+    TmThreadsSetFlag(&th_v, THV_KILL);
+    FAIL_IF(!TmThreadsWaitForUnpause(&th_v));
+    FAIL_IF(TmThreadsCheckFlag(&th_v, THV_PAUSED));
+
+    memset(&th_v, 0, sizeof(th_v));
+    th_v.type = TVT_PPT;
+
+    /* non-mgmt threads keep skipping the main loop */
+    TmThreadsSetFlag(&th_v, THV_PAUSE);
+    TmThreadsSetFlag(&th_v, THV_KILL);
+    FAIL_IF(TmThreadsWaitForUnpause(&th_v));
+    FAIL_IF(TmThreadsCheckFlag(&th_v, THV_PAUSED));
+
+    PASS;
+}
+
+static int TmThreadsTestWaitForUnpause02(void)
+{
+    /* unpause arrives while the thread spins in the pause wait */
+    ThreadVars th_v;
+    memset(&th_v, 0, sizeof(th_v));
+
+    TmThreadsSetFlag(&th_v, THV_PAUSE);
+    pthread_t th;
+    /* a failed create would leave THV_PAUSE set forever: fail the test
+     * instead of spinning in the pause wait */
+    int rc = pthread_create(&th, NULL, UnpauseHelper, &th_v);
+    FAIL_IF(rc != 0);
+
+    FAIL_IF(!TmThreadsWaitForUnpause(&th_v));
+    pthread_join(th, NULL);
+    FAIL_IF(TmThreadsCheckFlag(&th_v, THV_PAUSED));
+
+    PASS;
+}
+
+void TmThreadsRegisterTests(void)
+{
+    UtRegisterTest("TmThreadsTestWaitForUnpause01", TmThreadsTestWaitForUnpause01);
+    UtRegisterTest("TmThreadsTestWaitForUnpause02", TmThreadsTestWaitForUnpause02);
+}
+
+#endif /* UNITTESTS */

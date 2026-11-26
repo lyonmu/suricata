@@ -1,4 +1,4 @@
-/* Copyright (C) 2025 Open Information Security Foundation
+/* Copyright (C) 2025-2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,7 +21,7 @@ use std::slice;
 
 #[repr(C)]
 pub struct FTPResponseLine {
-    code: *mut u8,      // Response code as a string (may be null)
+    code: *mut u8,      // Response code as a string; empty if no code
     response: *mut u8,  // Response string
     length: usize,      // Length of the response string
     code_length: usize, // Length of the response code string
@@ -41,12 +41,20 @@ fn parse_response_line(input: &str) -> Option<FTPResponseLine> {
         return None;
     }
 
-    // Try to split off the 3-digit FTP status code
-    let (code_str, response_str) = match response_line.split_once(' ') {
-        Some((prefix, rest)) if prefix.len() == 3 && prefix.chars().all(|c| c.is_ascii_digit()) => {
-            (prefix, rest)
+    let is_code = |s: &str| s.len() == 3 && s.chars().all(|c| c.is_ascii_digit());
+
+    /* A response may carry no message at all ("221 \r\n"); the trim_end above
+     * then leaves a bare code with no separator left to split on. */
+    let response_contains_only_code = is_code(response_line);
+
+    let (code_str, response_str) = if response_contains_only_code {
+        (response_line, "")
+    } else {
+        // Try to split off the 3-digit FTP status code
+        match response_line.split_once(' ') {
+            Some((prefix, rest)) if is_code(prefix) => (prefix, rest),
+            _ => ("", response_line),
         }
-        _ => ("", response_line),
     };
 
     let code_bytes = code_str.as_bytes().to_vec();
@@ -95,16 +103,16 @@ pub unsafe extern "C" fn SCFTPFreeResponseLine(response: *mut FTPResponseLine) {
 
     let response = Box::from_raw(response);
 
-    if !response.response.is_null() {
-        let _ = Vec::from_raw_parts(response.code, response.code_length, response.code_length);
-    }
-
-    if !response.response.is_null() {
-        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-            response.response,
-            response.length,
-        ));
-    }
+    // parse_response_line always sets both buffers from Box::into_raw, so
+    // neither is null.
+    let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+        response.code,
+        response.code_length,
+    ));
+    let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+        response.response,
+        response.length,
+    ));
 }
 
 #[cfg(test)]

@@ -49,21 +49,19 @@ void LuaExtensionsMatchSetup(lua_State *lua_state, DetectLuaData *ld,
 {
     SCLogDebug("det_ctx %p, f %p", det_ctx, f);
 
+    LuaStateSetThreadVars(lua_state, det_ctx->tv);
     LuaStateSetSignature(lua_state, s);
     LuaStateSetFlow(lua_state, f);
     LuaStateSetDetCtx(lua_state, det_ctx);
 
-    if (det_ctx->tx_id_set) {
-        if (f && f->alstate) {
-            void *txptr = AppLayerParserGetTx(f->proto, f->alproto, f->alstate, det_ctx->tx_id);
-            if (txptr) {
-                LuaStateSetTX(lua_state, txptr, det_ctx->tx_id);
-            }
-        }
-    }
-
-    if (p != NULL)
-        LuaStateSetPacket(lua_state, p);
+    void *txptr = NULL;
+    if (det_ctx->tx_id_set && f && f->alstate)
+        txptr = AppLayerParserGetTx(f->proto, f->alproto, f->alstate, det_ctx->tx_id);
+    /* write both entries unconditionally: a failed or not-attempted
+     * lookup clears the previous transaction, and the packet entry dies
+     * with its packet, so the state can never wrap a stale pointer */
+    LuaStateSetTX(lua_state, txptr, txptr ? det_ctx->tx_id : 0);
+    LuaStateSetPacket(lua_state, p);
 
     LuaStateSetDirection(lua_state, (flags & STREAM_TOSERVER));
 }

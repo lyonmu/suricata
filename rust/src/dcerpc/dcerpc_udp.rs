@@ -108,19 +108,13 @@ impl DCERPCUDPState {
 
     pub fn free_tx(&mut self, tx_id: u64) {
         SCLogDebug!("Freeing TX with ID {} TX.ID {}", tx_id, tx_id + 1);
-        let len = self.transactions.len();
-        let mut found = false;
-        let mut index = 0;
-        for i in 0..len {
-            let tx = &self.transactions[i];
-            if tx.id == tx_id + 1 {
-                found = true;
-                index = i;
-                SCLogDebug!("tx {} progress {}/{}", tx.id, tx.req_done, tx.resp_done);
-                break;
-            }
-        }
-        if found {
+        if let Some(index) = self.transactions.iter().position(|tx| tx.id == tx_id + 1) {
+            SCLogDebug!(
+                "tx {} progress {}/{}",
+                self.transactions[index].id,
+                self.transactions[index].req_done,
+                self.transactions[index].resp_done
+            );
             SCLogDebug!(
                 "freeing TX with ID {} TX.ID {} at index {} left: {} max id: {}",
                 tx_id,
@@ -190,6 +184,8 @@ impl DCERPCUDPState {
             let max_size = cfg_max_stub_size() as usize;
             match hdr.pkt_type {
                 DCERPC_TYPE_REQUEST => {
+                    tx.req_cmd = hdr.pkt_type;
+                    tx.req_seen = true;
                     tx.frag_cnt_ts = tx.frag_cnt_ts.saturating_add(1);
                     if input.len() + tx.stub_data_buffer_ts.len() < max_size {
                         tx.stub_data_buffer_ts.extend_from_slice(input);
@@ -203,6 +199,8 @@ impl DCERPCUDPState {
                     return true;
                 }
                 DCERPC_TYPE_RESPONSE => {
+                    tx.resp_cmd = hdr.pkt_type;
+                    tx.resp_seen = true;
                     tx.frag_cnt_tc = tx.frag_cnt_tc.saturating_add(1);
                     if input.len() + tx.stub_data_buffer_tc.len() < max_size {
                         tx.stub_data_buffer_tc.extend_from_slice(input);

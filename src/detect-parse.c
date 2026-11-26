@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2025 Open Information Security Foundation
+/* Copyright (C) 2007-2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -63,7 +63,6 @@
 #include "app-layer-htp.h"
 
 #include "util-classification-config.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-debug.h"
 #include "string.h"
@@ -112,6 +111,7 @@ typedef struct SignatureParser_ {
 /** Valid action scopes per firewall hook class. */
 enum DetectFirewallPolicyClass {
     DETECT_FIREWALL_POLICY_CLASS_PACKET,
+    DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW,
     DETECT_FIREWALL_POLICY_CLASS_APP
 };
 
@@ -119,6 +119,10 @@ static const uint8_t fw_packet_hook_scopes[] = {
     ACTION_SCOPE_PACKET,
     ACTION_SCOPE_HOOK,
     ACTION_SCOPE_FLOW,
+};
+static const uint8_t fw_packet_pre_flow_hook_scopes[] = {
+    ACTION_SCOPE_PACKET,
+    ACTION_SCOPE_HOOK,
 };
 static const uint8_t fw_app_hook_scopes[] = {
     ACTION_SCOPE_FLOW,
@@ -734,6 +738,57 @@ SigMatch *DetectGetLastSMByListId(const Signature *s, int list_id, ...)
 }
 
 /**
+ * \brief Get the last SigMatch of keyword \a type in list \a list_id.
+ *
+ * Lets a keyword Setup callback inspect earlier instances of a keyword in
+ * the signature being set up, together with SCSigMatchGetPrevByType() and
+ * SCSigMatchGetCtx(), without depending on the SigMatch layout.
+ *
+ * Only the static lists from DetectSigmatchListEnum are supported. A dynamic
+ * buffer list can have several instances in a signature, each with its own
+ * SigMatch chain, so there is no single list to walk.
+ *
+ * \param s signature being set up
+ * \param list_id static list to search, e.g. DETECT_SM_LIST_MATCH
+ * \param type keyword id, as returned by SCDetectHelperKeywordRegister()
+ *
+ * \retval sm last SigMatch of \a type in the list, or NULL if there is none
+ *         or \a list_id is not a static list
+ */
+const SigMatch *SCDetectSignatureGetLastSMByType(const Signature *s, int list_id, uint16_t type)
+{
+    DEBUG_VALIDATE_BUG_ON(list_id < 0 || list_id >= DETECT_SM_LIST_MAX);
+    if (list_id < 0 || list_id >= DETECT_SM_LIST_MAX)
+        return NULL;
+    return DetectGetLastSMByListId(s, list_id, type, -1);
+}
+
+/**
+ * \brief Get the previous SigMatch of keyword \a type before \a sm.
+ *
+ * \param sm SigMatch to search before, must not be NULL
+ * \param type keyword id
+ *
+ * \retval sm previous SigMatch of \a type in the same list, or NULL if there
+ *         is none
+ */
+const SigMatch *SCSigMatchGetPrevByType(const SigMatch *sm, uint16_t type)
+{
+    return SigMatchGetLastSMByType(sm->prev, type);
+}
+
+/**
+ * \brief Get the keyword context of \a sm, as passed to
+ *        SCSigMatchAppendSMToList() by the keyword's Setup callback.
+ *
+ * \param sm SigMatch, must not be NULL
+ */
+const SigMatchCtx *SCSigMatchGetCtx(const SigMatch *sm)
+{
+    return sm->ctx;
+}
+
+/**
  * \brief Returns the sm with the largest index (added latest) from this sig
  *
  * \retval sm_last Pointer to last sm
@@ -1002,15 +1057,28 @@ static int SigParseOptions(DetectEngineCtx *de_ctx, Signature *s, char *optstr, 
     }
 
     if (s->init_data->firewall_rule && (st->flags & SIGMATCH_BAN_FIREWALL_RULE) != 0) {
-        SCLogError("keyword \'%s\' is not allowed with firewall rules", optname);
+        SCLogError("keyword \'%s\' is not supported with firewall rules", optname);
         goto error;
     }
 
     if (EngineModeIsFirewall() && (st->flags & SIGMATCH_BAN_FIREWALL_MODE) != 0) {
-        SCLogError("keyword \'%s\' is not allowed in firewall mode", optname);
+        SCLogError("keyword \'%s\' is not supported in firewall mode", optname);
         goto error;
     }
 
+    /* For non-firewall rules */
+    if (EngineModeIsFirewall() && !s->init_data->firewall_rule &&
+            (st->flags & SIGMATCH_BAN_TD_FIREWALL_MODE) != 0) {
+        SCLogError("keyword \'%s\' is not supported in threat detection rules with firewall mode",
+                optname);
+        goto error;
+    }
+
+    if (EngineModeIsFirewall() && !s->init_data->firewall_rule && s->action & ACTION_CONFIG) {
+        SCLogError(
+                "action \'config\' is not supported in threat detection rules with firewall mode");
+        goto error;
+    }
     int setup_ret = 0;
 
     /* Validate double quoting, trimming trailing white space along the way. */
@@ -1471,8 +1539,14 @@ static int SigParseProtoHookApp(
             SCLogError("sub states currently only supported for http2 and doh2");
             return -1;
         }
-        /* FW hook LTE mode */
+        /* FW hook LTE mode: the lower bound form is firewall only */
         if (*h == '<') {
+            if (!(s->flags & SIG_FLAG_FIREWALL)) {
+                SCLogError("hook '%s': the lower bound form '<' is only allowed for firewall "
+                           "rules",
+                        in_h);
+                return -1;
+            }
             h++;
             SCLogDebug("hook and prior hooks: '%s'", h);
             s->flags |= SIG_FLAG_FW_HOOK_LTE;
@@ -1517,8 +1591,14 @@ static int SigParseProtoHookApp(
             return -1;
         }
 
-        /* FW hook LTE mode */
+        /* FW hook LTE mode: the lower bound form is firewall only */
         if (*h == '<') {
+            if (!(s->flags & SIG_FLAG_FIREWALL)) {
+                SCLogError("hook '%s': the lower bound form '<' is only allowed for firewall "
+                           "rules",
+                        in_h);
+                return -1;
+            }
             h++;
             SCLogDebug("hook and prior hooks: '%s'", h);
             s->flags |= SIG_FLAG_FW_HOOK_LTE;
@@ -1575,6 +1655,8 @@ static int SigParseProtoHookApp(
             s->init_data->hook.t.app.app_progress);
 
     s->app_progress_hook = s->init_data->hook.t.app.app_progress;
+    /* the hook parser only accepts known sub states of the protocol */
+    s->sub_state = s->init_data->hook.t.app.sub_state;
     return 0;
 }
 
@@ -1822,6 +1904,10 @@ static int SigParseActionDo(const char *action_in, const int idx, const bool fw_
                        "rules");
             return -1;
         }
+        if (idx > 0 && (flags & ACTION_PASS) && !(*action_out & ACTION_ACCEPT)) {
+            SCLogError("'pass' is only supported as a secondary action for 'accept'");
+            return -1;
+        }
     }
 
     /* parse scope, if any */
@@ -1873,6 +1959,14 @@ static int SigParseActionDo(const char *action_in, const int idx, const bool fw_
             return -1;
         }
         *scope_out = scope_flags;
+    } else if (*scope_out != 0 && (flags & ACTION_PASS)) {
+        /* No scope given, this action inherits the scope set by the preceding
+         * actions of a multi-action rule. */
+        if (*scope_out != ACTION_SCOPE_PACKET && *scope_out != ACTION_SCOPE_FLOW) {
+            SCLogError("invalid action scope '%s' in action '%s': only 'packet' and 'flow' allowed",
+                    ActionScopeToString((enum ActionScope) * scope_out), action_in);
+            return -1;
+        }
     }
 
     /* require explicit action scope for fw rules */
@@ -2046,8 +2140,12 @@ static int SigParseBasics(DetectEngineCtx *de_ctx, Signature *s, const char *sig
     while (isspace(*index) || *index == '(') {
         index++;
     }
+    bool closing = false;
     for (size_t i = strlen(index); i > 0; i--) {
-        if (isspace(index[i - 1]) || index[i - 1] == ')') {
+        if (index[i - 1] == ')') {
+            closing = true;
+            index[i - 1] = '\0';
+        } else if (isspace(index[i - 1])) {
             index[i - 1] = '\0';
         } else {
             break;
@@ -2057,6 +2155,11 @@ static int SigParseBasics(DetectEngineCtx *de_ctx, Signature *s, const char *sig
 
     if (scan_only) {
         return 0;
+    }
+
+    if (!closing && de_ctx->rule_file) {
+        SCLogWarning(
+                "Rule missing closing parenthesis at %s:%u", de_ctx->rule_file, de_ctx->rule_line);
     }
 
     /* Parse Action */
@@ -2415,6 +2518,67 @@ void SigFree(DetectEngineCtx *de_ctx, Signature *s)
     SCFree(s);
 }
 
+static bool FirewallScopeValidForClass(uint8_t scope, enum DetectFirewallPolicyClass pol_class)
+{
+    const uint8_t *set = NULL;
+    size_t n = 0;
+    switch (pol_class) {
+        case DETECT_FIREWALL_POLICY_CLASS_PACKET:
+            set = fw_packet_hook_scopes;
+            n = ARRAY_SIZE(fw_packet_hook_scopes);
+            break;
+        case DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW:
+            set = fw_packet_pre_flow_hook_scopes;
+            n = ARRAY_SIZE(fw_packet_pre_flow_hook_scopes);
+            break;
+        case DETECT_FIREWALL_POLICY_CLASS_APP:
+            set = fw_app_hook_scopes;
+            n = ARRAY_SIZE(fw_app_hook_scopes);
+            break;
+        default:
+            FatalError("Invalid firewall policy class %u", (unsigned)pol_class);
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (set[i] == scope) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * \brief Render the valid scopes for a hook class to a string.
+ */
+static void FirewallScopeHintForClass(
+        enum DetectFirewallPolicyClass pol_class, char *out, size_t out_size)
+{
+    const uint8_t *set = NULL;
+    size_t n = 0;
+    switch (pol_class) {
+        case DETECT_FIREWALL_POLICY_CLASS_PACKET:
+            set = fw_packet_hook_scopes;
+            n = ARRAY_SIZE(fw_packet_hook_scopes);
+            break;
+        case DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW:
+            set = fw_packet_pre_flow_hook_scopes;
+            n = ARRAY_SIZE(fw_packet_pre_flow_hook_scopes);
+            break;
+        case DETECT_FIREWALL_POLICY_CLASS_APP:
+            set = fw_app_hook_scopes;
+            n = ARRAY_SIZE(fw_app_hook_scopes);
+            break;
+        default:
+            FatalError("Invalid firewall policy class %u", (unsigned)pol_class);
+    }
+    out[0] = '\0';
+    for (size_t i = 0; i < n; i++) {
+        if ((i > 0 && strlcat(out, "/", out_size) >= out_size) ||
+                strlcat(out, ActionScopeToString((enum ActionScope)set[i]), out_size) >= out_size) {
+            FatalError("firewall policy scope hint too long");
+        }
+    }
+}
+
 /**
  * \brief this function is used to set multiple possible app-layer protos
  * \brief into the current signature (for example ja4 for both tls and quic)
@@ -2501,6 +2665,29 @@ int DetectSignatureSetMultiAppProto(Signature *s, const AppProto *alprotos)
         }
     }
     return 0;
+}
+
+/**
+ * \brief Check if the keyword option being set up was negated.
+ *
+ * Only set for keywords registered with the SIGMATCH_HANDLE_NEGATION flag,
+ * in which case the leading '!' is stripped from the option value before it
+ * is passed to the keyword's Setup callback.
+ *
+ * Note: Must only be called from the `Setup` callback of the keyword currently
+ * being setup.
+ *
+ * \param s signature being set up
+ *
+ * \retval true if the option was prefixed with '!'
+ */
+bool SCDetectSetupSignatureIsNegated(const Signature *s)
+{
+    DEBUG_VALIDATE_BUG_ON(s->init_data == NULL);
+    if (s->init_data) {
+        return s->init_data->negated;
+    }
+    return NULL;
 }
 
 int SCDetectSignatureSetAppProto(Signature *s, AppProto alproto)
@@ -2764,6 +2951,17 @@ static bool DetectFirewallRuleValidate(const DetectEngineCtx *de_ctx, const Sign
         SCLogError("rule %u is loaded as a firewall rule, but does not specify an "
                    "explicit hook",
                 s->id);
+        return false;
+    }
+    if (s->init_data->hook.type == SIGNATURE_HOOK_TYPE_PKT &&
+            s->init_data->hook.t.pkt.ph == SIGNATURE_HOOK_PKT_PRE_FLOW &&
+            !FirewallScopeValidForClass(
+                    s->action_scope, DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW)) {
+        char hint[32]; // space to combine ActionScopeToString results
+        FirewallScopeHintForClass(DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW, hint, sizeof(hint));
+        SCLogError("rule %u: action scope (\"%s\") is not valid for the \"pre_flow\" hook. Valid "
+                   "scopes: %s",
+                s->id, ActionScopeToString((enum ActionScope)s->action_scope), hint);
         return false;
     }
     if (s->init_data->hook.type == SIGNATURE_HOOK_TYPE_APP) {
@@ -4166,6 +4364,7 @@ static int AddAppPolicySignature(struct DetectFirewallAppPolicy *pol)
         return -1;
     }
     s->app_progress_hook = pol->progress;
+    s->sub_state = pol->sub_state;
     s->action = pol->policy.action;
     s->action_scope = pol->policy.action_scope;
     s->alproto = pol->alproto;
@@ -4201,62 +4400,14 @@ static int DoParsePolicy(const char *policy_name, struct DetectFirewallPolicy *p
             return -1;
         idx++;
     }
+
+    if (action & ACTION_CONFIG) {
+        SCLogError("%s: 'config' is not a valid default policy action", policy_name);
+        return -1;
+    }
     pol->action = action;
     pol->action_scope = action_scope;
     return 1;
-}
-
-static bool FirewallScopeValidForClass(uint8_t scope, enum DetectFirewallPolicyClass pol_class)
-{
-    const uint8_t *set = NULL;
-    size_t n = 0;
-    switch (pol_class) {
-        case DETECT_FIREWALL_POLICY_CLASS_PACKET:
-            set = fw_packet_hook_scopes;
-            n = ARRAY_SIZE(fw_packet_hook_scopes);
-            break;
-        case DETECT_FIREWALL_POLICY_CLASS_APP:
-            set = fw_app_hook_scopes;
-            n = ARRAY_SIZE(fw_app_hook_scopes);
-            break;
-        default:
-            FatalError("Invalid firewall policy class %u", (unsigned)pol_class);
-    }
-    for (size_t i = 0; i < n; i++) {
-        if (set[i] == scope) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * \brief Render the valid scopes for a hook class to a string.
- */
-static void FirewallScopeHintForClass(
-        enum DetectFirewallPolicyClass pol_class, char *out, size_t out_size)
-{
-    const uint8_t *set = NULL;
-    size_t n = 0;
-    switch (pol_class) {
-        case DETECT_FIREWALL_POLICY_CLASS_PACKET:
-            set = fw_packet_hook_scopes;
-            n = ARRAY_SIZE(fw_packet_hook_scopes);
-            break;
-        case DETECT_FIREWALL_POLICY_CLASS_APP:
-            set = fw_app_hook_scopes;
-            n = ARRAY_SIZE(fw_app_hook_scopes);
-            break;
-        default:
-            FatalError("Invalid firewall policy class %u", (unsigned)pol_class);
-    }
-    out[0] = '\0';
-    for (size_t i = 0; i < n; i++) {
-        if ((i > 0 && strlcat(out, "/", out_size) >= out_size) ||
-                strlcat(out, ActionScopeToString((enum ActionScope)set[i]), out_size) >= out_size) {
-            FatalError("firewall policy scope hint too long");
-        }
-    }
 }
 
 /**
@@ -4460,8 +4611,11 @@ static int DetectFirewallLoadPacketPolicy(struct DetectFirewallPolicies *fw_poli
     /* <prefix>.default-policy */
     FirewallPolicyChainAdd(&chain, "%s.default-policy", prefix);
 
+    const enum DetectFirewallPolicyClass pol_class =
+            (id == DETECT_FIREWALL_POLICY_PRE_FLOW) ? DETECT_FIREWALL_POLICY_CLASS_PACKET_PRE_FLOW
+                                                    : DETECT_FIREWALL_POLICY_CLASS_PACKET;
     struct DetectFirewallPolicy *pol = &fw_policies->pkt[id]; // built-in default
-    int r = ResolveFirewallPolicy(pol, DETECT_FIREWALL_POLICY_CLASS_PACKET, &chain);
+    int r = ResolveFirewallPolicy(pol, pol_class, &chain);
     if (r < 0) {
         return -1;
     }
@@ -4489,6 +4643,281 @@ static int DetectFirewallLoadPacketPolicies(
     return 0;
 }
 
+/**
+ * State keys renamed in this release, for a migration hint in the
+ * warning below. Deliberately name-based only: the check itself is
+ * alproto-generic and must not reference specific protocols.
+ */
+struct FwPolicyStateRenameHint {
+    AppProto proto;
+    const char *old_name;
+    const char *new_name;
+};
+/* hints are scoped per protocol (TLS only for now): a hint only makes a
+ * key an error under the section of the protocol that renamed it, so a
+ * cross-protocol typo stays a plain warning */
+static const struct FwPolicyStateRenameHint g_fw_policy_state_rename_hints[] = {
+    /* ssh: the state scale was rebuilt; the parked long-banner state
+     * (banner-wait-eol) was removed - the banner state plus the
+     * one-shot ssh.long_banner event cover it */
+    { ALPROTO_SSH, "request-in-progress", "request-banner" },
+    { ALPROTO_SSH, "request-banner-wait-eol", "request-banner" },
+    { ALPROTO_SSH, "request-banner-done", "request-kex" },
+    { ALPROTO_SSH, "request-finished", "request-session" },
+    { ALPROTO_SSH, "response-in-progress", "response-banner" },
+    { ALPROTO_SSH, "response-banner-wait-eol", "response-banner" },
+    { ALPROTO_SSH, "response-banner-done", "response-kex" },
+    { ALPROTO_SSH, "response-finished", "response-session" },
+    { ALPROTO_TLS, "client-in-progress", "client-started" },
+    { ALPROTO_TLS, "client-hello-done", "client-hello" },
+    { ALPROTO_TLS, "client-cert-done", "client-cert" },
+    { ALPROTO_TLS, "client-handshake-done", "client-data" },
+    { ALPROTO_TLS, "server-in-progress", "server-started" },
+    { ALPROTO_TLS, "server-hello-done", "server-data" },
+    { ALPROTO_TLS, "server-cert-done", "server-cert" },
+    { ALPROTO_TLS, "server-handshake-done", "server-data" },
+};
+
+/**
+ * \brief Check whether a firewall policy key is valid for a state lookup
+ *
+ * Valid keys are the non-state policy keys (the default-policy fallback
+ * and the generic hook aliases, see DetectFirewallAppGenericHookName)
+ * and the keys matching a current state name. State names are checked
+ * by mirroring the state enumeration of DetectFirewallLoadDefaultPolicies
+ * (the source of truth for which config keys the loader consults).
+ * The per-protocol GetStateIdByName callbacks are not usable here:
+ * they are not registered for every protocol and they know nothing
+ * about sub-state state tables.
+ *
+ * \param a App proto
+ * \param sub_state_name Sub-state name, NULL for the plain state table
+ * \param key Policy key as written in the config (dash form)
+ *
+ * \retval true If the key is a non-state policy key or matches a
+ *              current state name in either direction
+ */
+/* the non-state keys the policy loader consults directly (possibly with a
+ * mapping value); not states, not sub-state sections */
+static bool FwPolicyKeyIsNonState(const char *key)
+{
+    return strcmp(key, "default-policy") == 0 || strcmp(key, "request-started") == 0 ||
+           strcmp(key, "response-started") == 0 || strcmp(key, "request-complete") == 0 ||
+           strcmp(key, "response-complete") == 0;
+}
+
+static bool FwPolicyStateKeyIsKnown(AppProto a, const char *sub_state_name, const char *key)
+{
+    /* non-state keys of the policy config */
+    if (FwPolicyKeyIsNonState(key)) {
+        return true;
+    }
+
+    /* the two flow directions; not a contiguous range */
+    const uint8_t dirs[2] = { STREAM_TOSERVER, STREAM_TOCLIENT };
+
+    if (sub_state_name == NULL) {
+        for (size_t d = 0; d < 2; d++) {
+            const uint8_t complete = AppLayerParserGetStateProgressCompletionStatus(a, dirs[d]);
+            for (uint8_t state = 0; state <= complete; state++) {
+                /* the state name tables do not vary per ipproto for the
+                 * app-layer protocols; IPPROTO_TCP is a representative
+                 * value */
+                const char *name = AppLayerParserGetStateNameById(IPPROTO_TCP, a, state, dirs[d]);
+                if (name == NULL) {
+                    continue;
+                }
+                char dash[FW_POLICY_YAML_PATH_NAME_MAX + 1];
+                FirewallHookNameConvertUnderscoreToDash(name, dash, sizeof(dash));
+                if (strcmp(dash, key) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    const uint8_t max_sub_state = AppLayerParserGetMaxSubState(a);
+    for (uint8_t s = 1; s <= max_sub_state; s++) {
+        const char *sub_name = AppLayerParserGetSubStateName(a, s);
+        if (sub_name == NULL || strcmp(sub_name, sub_state_name) != 0) {
+            continue;
+        }
+        const uint8_t max_state = AppLayerParserGetSubStateCompletion(a, s);
+        for (size_t d = 0; d < 2; d++) {
+            for (uint8_t state = 0; state <= max_state; state++) {
+                const char *name = AppLayerParserGetSubStateProgressName(a, s, state, dirs[d]);
+                if (name == NULL) {
+                    continue;
+                }
+                char dash[FW_POLICY_YAML_PATH_NAME_MAX + 1];
+                FirewallHookNameConvertUnderscoreToDash(name, dash, sizeof(dash));
+                if (strcmp(dash, key) == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * \brief Warn about firewall policy keys that match no current state
+ *
+ * DoParseAppPolicy only consults keys matching the current state name
+ * table, so keys for renamed or removed states are silently ignored
+ * and the state falls back to the implicit default policy. Walk the
+ * config node once and report on load: keys known to be renamed states
+ * are errors, other unmatched keys a warning. The caller aggregates the
+ * per-node counts and aborts init (init-failure-fatal) only after every
+ * protocol section has been reported.
+ *
+ * \param prefix Config path prefix for the protocol node
+ * \param a App proto
+ * \param sub_state_name Sub-state name, NULL for the plain state table
+ *
+ * \retval 0 No known-wrong keys in the node
+ * \retval >0 Number of keys known to be renamed states
+ */
+/* a section (mapping) has at least one child with a non-numeric name;
+ * list values hang decimal-named children ("0", "1", ...) off the key */
+static bool FirewallPolicyNodeIsMapping(const SCConfNode *node)
+{
+    SCConfNode *c;
+
+    TAILQ_FOREACH (c, &node->head, next) {
+        if (c->name == NULL) {
+            continue;
+        }
+        for (const char *p = c->name; *p; p++) {
+            if (*p < '0' || *p > '9') {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* the yaml loader hangs list values off the key node as children named
+ * "0", "1", ...; such nodes are not sections */
+static bool FirewallPolicyNodeIsList(const SCConfNode *node)
+{
+    SCConfNode *c;
+
+    if (TAILQ_EMPTY(&node->head)) {
+        return false;
+    }
+    TAILQ_FOREACH (c, &node->head, next) {
+        if (c->name == NULL) {
+            return false;
+        }
+        for (const char *p = c->name; *p; p++) {
+            if (*p < '0' || *p > '9') {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static int WarnUnmatchedFirewallPolicyStateKeys(
+        const char *prefix, AppProto a, const char *sub_state_name)
+{
+    const char *proto = AppProtoToStringRaw(a);
+    if (proto == NULL) {
+        return 0;
+    }
+
+    char sub[FW_POLICY_YAML_PATH_NAME_MAX + 1] = "";
+    if (sub_state_name != NULL) {
+        sub[0] = '.';
+        FirewallHookNameConvertUnderscoreToDash(sub_state_name, sub + 1, sizeof(sub) - 1);
+    }
+    /* exact-size path: a fixed buffer could truncate long prefixes, and a
+     * truncated lookup would silently skip the check */
+    const size_t path_len = strlen(prefix) + strlen(proto) + strlen(sub) + 6;
+    char *path = SCMalloc(path_len);
+    if (path == NULL) {
+        return 0;
+    }
+    snprintf(path, path_len, "%s.app.%s%s", prefix, proto, sub);
+
+    SCConfNode *node = SCConfGetNode(path);
+    if (node == NULL) {
+        SCFree(path);
+        return 0;
+    }
+
+    SCConfNode *c;
+    int known_wrong_keys = 0;
+    TAILQ_FOREACH (c, &node->head, next) {
+        if (c->name == NULL) {
+            continue;
+        }
+
+        if (sub_state_name == NULL) {
+            /* a sub-state section or policy list is not a plain key; it is
+             * checked with its own sub_state_name. Only children-bearing
+             * nodes count: a scalar key named like a sub-state (e.g.
+             * app.http2.stream: accept) is never consulted by the loader
+             * and must fall through to the warning below */
+            bool is_sub_state_section = false;
+            if (c->head.tqh_first != NULL) {
+                for (uint8_t s = 1; s <= AppLayerParserGetMaxSubState(a); s++) {
+                    const char *sn = AppLayerParserGetSubStateName(a, s);
+                    if (sn == NULL) {
+                        continue;
+                    }
+                    char dash[FW_POLICY_YAML_PATH_NAME_MAX + 1];
+                    FirewallHookNameConvertUnderscoreToDash(sn, dash, sizeof(dash));
+                    if (strcmp(dash, c->name) == 0)
+                        is_sub_state_section = true;
+                }
+            }
+            if (is_sub_state_section)
+                continue;
+            /* any other section is reported by the sub-state section
+             * check, not as a state key */
+            if (AppLayerParserSupportsSubStates(a) && FirewallPolicyNodeIsMapping(c)) {
+                continue;
+            }
+        }
+
+        /* the plain node of a sub-state protocol is only consulted by
+         * the loader for default-policy: state names and the generic
+         * hook aliases are read under the sub-state sections only */
+        const bool consulted = (sub_state_name != NULL || !AppLayerParserSupportsSubStates(a) ||
+                                strcmp(c->name, "default-policy") == 0);
+        if (consulted && FwPolicyStateKeyIsKnown(a, sub_state_name, c->name)) {
+            continue;
+        }
+
+        const char *hint = NULL;
+        for (size_t i = 0; i < ARRAY_SIZE(g_fw_policy_state_rename_hints); i++) {
+            if (g_fw_policy_state_rename_hints[i].proto == a &&
+                    strcmp(c->name, g_fw_policy_state_rename_hints[i].old_name) == 0) {
+                hint = g_fw_policy_state_rename_hints[i].new_name;
+                break;
+            }
+        }
+        if (hint) {
+            /* a key known to be a renamed state is a definite error, not
+             * just a fallback to the default policy */
+            SCLogError("firewall policy: key '%s' under %s matches no %s state: "
+                       "a state previously named '%s' was renamed to '%s' "
+                       "in this release - use the new name",
+                    c->name, path, proto, c->name, hint);
+            known_wrong_keys++;
+        } else {
+            SCLogWarning("firewall policy: key '%s' under %s matches no %s state "
+                         "and is ignored",
+                    c->name, path, proto);
+        }
+    }
+    SCFree(path);
+    return known_wrong_keys;
+}
+
 int DetectFirewallLoadDefaultPolicies(DetectEngineCtx *de_ctx)
 {
     char prefix[96] = "firewall.policies";
@@ -4503,6 +4932,7 @@ int DetectFirewallLoadDefaultPolicies(DetectEngineCtx *de_ctx)
     if (DetectFirewallLoadPacketPolicies(fw_policies, prefix) < 0)
         return -1;
 
+    int known_wrong_keys = 0;
     for (AppProto a = 0; a < g_alproto_max; a++) {
         if (!AppProtoIsValid(a))
             continue;
@@ -4546,7 +4976,63 @@ int DetectFirewallLoadDefaultPolicies(DetectEngineCtx *de_ctx)
                                 STREAM_TOCLIENT, fw_policies) < 0)
                         return -1;
                 }
+
+                known_wrong_keys += WarnUnmatchedFirewallPolicyStateKeys(prefix, a, sub_state_name);
             }
+
+            /* a sub-state section that matches no known sub-state name is
+             * silently ignored by the loader; report it instead */
+            {
+                const char *proto_name = AppProtoToStringRaw(a);
+                if (proto_name != NULL) {
+                    const size_t path_len = strlen(prefix) + 5 + strlen(proto_name) + 1;
+                    char *proto_path = SCMalloc(path_len);
+                    if (proto_path != NULL) {
+                        snprintf(proto_path, path_len, "%s.app.%s", prefix, proto_name);
+                        SCConfNode *proto_node = SCConfGetNode(proto_path);
+                        if (proto_node != NULL) {
+                            SCConfNode *sc;
+                            TAILQ_FOREACH (sc, &proto_node->head, next) {
+                                /* leaf keys and list values (e.g. the
+                                 * default-policy list) are not sections;
+                                 * the consulted non-state keys (default-policy,
+                                 * the generic hook aliases) are consulted
+                                 * directly by the loader, possibly with a
+                                 * mapping value, and are not sub-state
+                                 * sections either */
+                                if (sc->name == NULL || sc->head.tqh_first == NULL ||
+                                        FirewallPolicyNodeIsList(sc) ||
+                                        FwPolicyKeyIsNonState(sc->name)) {
+                                    continue;
+                                }
+                                bool known_section = false;
+                                for (uint8_t s2 = 1; s2 <= max_sub_state; s2++) {
+                                    const char *sn = AppLayerParserGetSubStateName(a, s2);
+                                    if (sn == NULL) {
+                                        continue;
+                                    }
+                                    char dash[FW_POLICY_YAML_PATH_NAME_MAX + 1];
+                                    FirewallHookNameConvertUnderscoreToDash(sn, dash, sizeof(dash));
+                                    if (strcmp(dash, sc->name) == 0) {
+                                        known_section = true;
+                                        break;
+                                    }
+                                }
+                                if (!known_section) {
+                                    SCLogWarning("firewall policy: sub-state section '%s' "
+                                                 "under %s matches no %s sub-state and is "
+                                                 "ignored",
+                                            sc->name, proto_path, proto_name);
+                                }
+                            }
+                        }
+                        SCFree(proto_path);
+                    }
+                }
+            }
+            /* the plain node is not read by the loader for sub-state
+             * protocols either; check it the same way */
+            known_wrong_keys += WarnUnmatchedFirewallPolicyStateKeys(prefix, a, NULL);
         } else {
             const uint8_t complete_state_ts =
                     (const uint8_t)AppLayerParserGetStateProgressCompletionStatus(
@@ -4568,7 +5054,16 @@ int DetectFirewallLoadDefaultPolicies(DetectEngineCtx *de_ctx)
                             STREAM_TOCLIENT, fw_policies) < 0)
                     return -1;
             }
+
+            known_wrong_keys += WarnUnmatchedFirewallPolicyStateKeys(prefix, a, NULL);
         }
+    }
+    if (known_wrong_keys) {
+        /* every section has been reported by now; abort under
+         * init-failure-fatal, without it this downgrades to a warning */
+        FatalErrorOnInit("firewall policy: %d key(s) match no state and are "
+                         "known to be renamed - fix the keys and retry",
+                known_wrong_keys);
     }
     return 0;
 }

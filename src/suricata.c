@@ -30,7 +30,9 @@
 #if HAVE_SIGNAL_H
 #include <signal.h>
 #endif
-#ifndef OS_WIN32
+#ifdef OS_WIN32
+#include "win32-service.h"
+#else
 #ifdef HAVE_SYS_RESOURCE_H
 // setrlimit
 #include <sys/resource.h>
@@ -139,7 +141,6 @@
 #include "util-proto-name.h"
 #include "util-running-modes.h"
 #include "util-signal.h"
-#include "util-time.h"
 #include "util-validate.h"
 #include "util-var-name.h"
 #ifdef SYSTEMD_NOTIFY
@@ -452,6 +453,7 @@ void GlobalsDestroy(void)
     TmModuleRunDeInit();
     ParseSizeDeinit();
     DatalinkTableDeinit();
+    DecodeGlobalConfigDeinit();
 
 #ifdef HAVE_DPDK
     DPDKCleanupEAL();
@@ -747,7 +749,8 @@ static void PrintUsage(const char *progname)
 
     printf("\n  Info:\n");
     printf("\t-V                                   : display Suricata version\n");
-    printf("\t--list-keywords[=all|csv|<kword>]    : list keywords implemented by the engine\n");
+    printf("\t--list-keywords                      : list keywords implemented by the engine\n");
+    printf("\t  [=all|json|csv|<kword>]\n");
     printf("\t--list-runmodes                      : list supported runmodes\n");
     printf("\t--list-app-layer-protos              : list supported app layer protocols\n");
     printf("\t--list-rule-protos                   : list supported rule protocols\n");
@@ -2830,7 +2833,6 @@ int PostConfLoadedSetup(SCInstance *suri)
         }
     }
     if (suri->is_firewall) {
-        SCLogWarning("firewall mode is EXPERIMENTAL and subject to change");
         EngineModeSetFirewall(g_engine_host_mode);
     }
 
@@ -3037,6 +3039,23 @@ void SuricataMainLoop(void)
         }
 
         TmThreadCheckThreadState();
+
+#ifdef OS_WIN32
+        /* Service control requests are handled like their signal equivalents,
+         * SC_SERVICE_REQUEST_RELOAD_RULES like SIGUSR2 and
+         * SC_SERVICE_REQUEST_REOPEN_LOG_FILES like SIGHUP. */
+        uint32_t requests = SCServiceTakeRequests();
+        if (requests & SC_SERVICE_REQUEST_REOPEN_LOG_FILES) {
+            SCLogNotice("Reopen of log files requested by service control");
+            sighup_count = 1;
+        }
+        if (requests & SC_SERVICE_REQUEST_RELOAD_RULES) {
+            SCLogNotice("Rule reload requested by service control");
+            if (DetectEngineEnabled() && sigusr2_count < 2) {
+                sigusr2_count++;
+            }
+        }
+#endif
 
         if (sighup_count > 0) {
             OutputNotifyFileRotation();

@@ -226,10 +226,13 @@ unsafe fn process_ipv6_set(
 ) -> i32 {
     let ipv6 = match Ipv6Addr::from_str(v[0]) {
         Ok(a) => a,
-        Err(_) => {
-            SCFatalErrorOnInit!("invalid Ipv6 value {} in {}", set_name, filename.display());
-            return -1;
-        }
+        Err(_) => match Ipv4Addr::from_str(v[0]) {
+            Ok(a) => a.to_ipv6_mapped(),
+            Err(_) => {
+                SCFatalErrorOnInit!("invalid Ipv6 value {} in {}", set_name, filename.display());
+                return -1;
+            }
+        },
     };
     let mut fin_ipv6 = ipv6;
 
@@ -275,14 +278,22 @@ fn read_or_create_file<P>(filename: P, fmode: &str) -> io::Result<io::Lines<io::
 where
     P: AsRef<Path>,
 {
-    let file: File = if fmode == "r" {
-        File::open(filename)?
+    let mut opts = OpenOptions::new();
+    if fmode == "r" {
+        opts.read(true);
     } else {
-        OpenOptions::new()
-            .append(true)
-            .create(true)
-            .read(true)
-            .open(filename)?
+        opts.append(true).create(true).read(true);
     };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = opts.open(filename)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::other("Can only read from a regular file"));
+    }
+
     Ok(io::BufReader::new(file).lines())
 }

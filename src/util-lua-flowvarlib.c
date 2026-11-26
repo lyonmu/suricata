@@ -31,11 +31,7 @@ static const char suricata_flowvar_mt[] = "suricata:flowvar:mt";
 
 static DetectLuaData *GetLuaData(lua_State *luastate)
 {
-    DetectLuaData *ld;
-    lua_pushlightuserdata(luastate, (void *)&luaext_key_ld);
-    lua_gettable(luastate, LUA_REGISTRYINDEX);
-    ld = lua_touserdata(luastate, -1);
-    return ld;
+    return LuaStateGetDetectLuaData(luastate);
 }
 
 /**
@@ -50,14 +46,25 @@ static DetectLuaData *GetLuaData(lua_State *luastate)
 static int LuaFlowvarRegister(lua_State *L)
 {
     DetectLuaData *ld = GetLuaData(L);
+    if (ld == NULL) {
+        return luaL_error(L, "flowvar API not available in this context");
+    }
+    if (!ld->register_in_init) {
+        return luaL_error(L, "flowvar.register() must be called from init()");
+    }
     const char *name = luaL_checkstring(L, 1);
-    uint32_t *flowvar_id = lua_newuserdata(L, sizeof(*flowvar_id));
+    /* check the limit first: a failed over-limit registration must not
+     * leave a name store entry that nothing unregisters */
+    if (ld->flowvars >= DETECT_LUA_MAX_FLOWVARS) {
+        return luaL_error(L, "too many flowvars registered");
+    }
+    uint32_t *flowvar_id = SCLuaNewUserData(L, SCLUA_TUD_FLOWVAR, sizeof(*flowvar_id));
+    if (flowvar_id == NULL) {
+        return luaL_error(L, "failed to allocate flowvar");
+    }
     *flowvar_id = VarNameStoreRegister(name, VAR_TYPE_FLOW_VAR);
     if (*flowvar_id == 0) {
         return luaL_error(L, "failed to register flowvar");
-    }
-    if (ld->flowvars >= DETECT_LUA_MAX_FLOWVARS) {
-        return luaL_error(L, "too many flowvars registered");
     }
     ld->flowvar[ld->flowvars++] = *flowvar_id;
 
@@ -70,7 +77,10 @@ static int LuaFlowvarRegister(lua_State *L)
 static int LuaFlowvarGet(lua_State *L)
 {
     const char *name = luaL_checkstring(L, 1);
-    uint32_t *flowvar_id = lua_newuserdata(L, sizeof(*flowvar_id));
+    uint32_t *flowvar_id = SCLuaNewUserData(L, SCLUA_TUD_FLOWVAR, sizeof(*flowvar_id));
+    if (flowvar_id == NULL) {
+        return luaL_error(L, "failed to allocate flowvar");
+    }
     *flowvar_id = VarNameStoreLookupByName(name, VAR_TYPE_FLOW_VAR);
     if (*flowvar_id == 0) {
         return luaL_error(L, "flowvar does not exist");
@@ -84,7 +94,7 @@ static int LuaFlowvarGet(lua_State *L)
 
 static int LuaFlowvarValue(lua_State *L)
 {
-    uint32_t *flowvar_id = luaL_checkudata(L, 1, suricata_flowvar_mt);
+    uint32_t *flowvar_id = SCLuaCheckUserData(L, 1, suricata_flowvar_mt, SCLUA_TUD_FLOWVAR);
     Flow *f = LuaStateGetFlow(L);
     if (f == NULL) {
         return LuaCallbackError(L, "flow is NULL");
@@ -101,9 +111,14 @@ static int LuaFlowvarValue(lua_State *L)
 
 static int LuaFlowvarSet(lua_State *L)
 {
-    const char *value = luaL_checkstring(L, 2);
-    const int len = (int)luaL_checkinteger(L, 3);
-    uint32_t *flowvar_id = luaL_checkudata(L, 1, suricata_flowvar_mt);
+    size_t slen = 0;
+    const char *value = luaL_checklstring(L, 2, &slen);
+    lua_Integer req = luaL_optinteger(L, 3, (lua_Integer)slen);
+    if (req < 0 || ((size_t)req > slen) || (size_t)req > UINT16_MAX) {
+        return luaL_error(L, "length out of range");
+    }
+    const size_t len = (size_t)req;
+    uint32_t *flowvar_id = SCLuaCheckUserData(L, 1, suricata_flowvar_mt, SCLUA_TUD_FLOWVAR);
     Flow *f = LuaStateGetFlow(L);
     if (f == NULL) {
         return luaL_error(L, "no flow");
@@ -117,7 +132,9 @@ static int LuaFlowvarSet(lua_State *L)
     buf[len] = '\0';
     FlowVarAddIdValue(f, *flowvar_id, buf, (uint16_t)len);
 
-    return 1;
+    /* set() documents no result; claiming one hands back the last
+     * argument (or the flow lock hint left by LuaStateGetFlow) */
+    return 0;
 }
 
 static const luaL_Reg flowvarlib[] = {

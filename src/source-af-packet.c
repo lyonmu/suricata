@@ -41,7 +41,6 @@
 #include "tm-queuehandlers.h"
 #include "tm-modules.h"
 #include "tm-threads.h"
-#include "tm-threads-common.h"
 #include "conf.h"
 #include "util-cpu.h"
 #include "util-datalink.h"
@@ -50,7 +49,6 @@
 #include "util-ebpf.h"
 #include "util-error.h"
 #include "util-privs.h"
-#include "util-optimize.h"
 #include "util-checksum.h"
 #include "util-ioctl.h"
 #include "util-host-info.h"
@@ -2726,7 +2724,7 @@ static void UpdateRawDataForVLANHdr(Packet *p)
         uint8_t *pstart = GET_PKT_DATA(p) - VLAN_HEADER_LEN;
         uint32_t plen = GET_PKT_LEN(p) + VLAN_HEADER_LEN;
         /* move ethernet addresses */
-        memmove(pstart, GET_PKT_DATA(p), 2 * ETH_ALEN);
+        SCMemmove(pstart, plen, GET_PKT_DATA(p), 2 * ETH_ALEN);
         /* write vlan info */
         *(uint16_t *)(pstart + 2 * ETH_ALEN) = htons(0x8100);
         *(uint16_t *)(pstart + 2 * ETH_ALEN + 2) = htons(p->afp_v.vlan_tci);

@@ -80,9 +80,9 @@ impl ConnectionParser {
             input.reset_callback_start();
 
             match resp.response_progress {
-                HtpResponseProgress::HEADERS => self.response_receiver_set(header_fn),
                 HtpResponseProgress::TRAILER => self.response_receiver_set(trailer_fn),
-                _ => Ok(()),
+                // response_state == State::Headers can have progress LINE after a 100 continue
+                _ => self.response_receiver_set(header_fn),
             }?;
         }
         // Same comment as in request_handle_state_change(). Below is a copy.
@@ -222,10 +222,14 @@ impl ConnectionParser {
                         Ok((len, ext)) => {
                             self.response_chunked_length = len;
                             if ext {
-                                htp_warn!(
+                                let mut flags = 0; // unused but needed by macro
+                                htp_warn_once!(
                                     self.logger,
                                     HtpLogCode::RESPONSE_CHUNK_EXTENSION,
-                                    "Response chunk extension"
+                                    "Response chunk extension",
+                                    self.response_mut().unwrap().flags,
+                                    flags,
+                                    HtpFlags::FIELD_RESP_CHUNK_EXTENSION
                                 );
                             }
                             // Handle chunk length
@@ -446,10 +450,14 @@ impl ConnectionParser {
                 _ => {
                     let response_tx = self.response_mut().unwrap();
                     if response_tx.seen_100continue {
-                        htp_error!(
+                        let mut flags = 0; // unused but needed by macro
+                        htp_warn_once!(
                             self.logger,
                             HtpLogCode::CONTINUE_ALREADY_SEEN,
-                            "Already seen 100-Continue."
+                            "Already seen 100-Continue.",
+                            self.response_mut().unwrap().flags,
+                            flags,
+                            HtpFlags::FIELD_100_CONTINUE
                         );
                     }
                     // Expecting to see another response line next.
@@ -457,7 +465,6 @@ impl ConnectionParser {
                     let response_tx = self.response_mut().unwrap();
                     // Ignore any response headers seen so far.
                     response_tx.response_headers.elements.clear();
-                    response_tx.response_progress = HtpResponseProgress::LINE;
                     response_tx.seen_100continue = true;
                     return Ok(());
                 }
@@ -721,7 +728,12 @@ impl ConnectionParser {
         self.state_response_line()?;
         // Move on to the next phase.
         self.response_state = State::Headers;
-        self.response_mut().unwrap().response_progress = HtpResponseProgress::HEADERS;
+        let response_tx = self.response_mut().unwrap();
+        // delay progress in case of a 100 continue
+        // so we do not revert progress to line after headers
+        if !response_tx.response_status_number.eq_num(100) {
+            response_tx.response_progress = HtpResponseProgress::HEADERS;
+        }
         Ok(())
     }
 
@@ -1005,7 +1017,8 @@ impl ConnectionParser {
             }
             // We've seen all response headers. At terminator.
             self.response_state =
-                if self.response().unwrap().response_progress == HtpResponseProgress::HEADERS {
+                // we can have response progress LINE in case of 100 continue
+                if self.response().unwrap().response_progress <= HtpResponseProgress::HEADERS {
                     // Response headers.
                     // The next step is to determine if this response has a body.
                     State::BodyDetermine
@@ -1063,6 +1076,7 @@ impl ConnectionParser {
             | HtpContentEncoding::Deflate
             | HtpContentEncoding::Zlib
             | HtpContentEncoding::Brotli
+            | HtpContentEncoding::Zstd
             | HtpContentEncoding::Lzma => {
                 // Send data buffer to the decompressor if it exists
                 if resp.response_decompressor.is_none() && data.is_none() {
@@ -1144,6 +1158,8 @@ impl ConnectionParser {
                 HtpContentEncoding::Lzma
             } else if ce.cmp_nocase_nozero(b"br") {
                 HtpContentEncoding::Brotli
+            } else if ce.cmp_nocase_nozero(b"zstd") {
+                HtpContentEncoding::Zstd
             } else if ce.cmp_nocase_nozero(b"inflate") || ce.cmp_nocase_nozero(b"none") {
                 HtpContentEncoding::None
             } else {
@@ -1164,6 +1180,7 @@ impl ConnectionParser {
             | HtpContentEncoding::Deflate
             | HtpContentEncoding::Zlib
             | HtpContentEncoding::Brotli
+            | HtpContentEncoding::Zstd
             | HtpContentEncoding::Lzma => {
                 self.response_prepend_decompressor(response_content_encoding_processing)?;
             }
@@ -1320,6 +1337,9 @@ impl ConnectionParser {
         let compression_options = self.cfg.compression_options;
         if self.bombs >= compression_options.get_max_bombs() {
             // skip decompression for this flow if too many bombs were seen
+            self.response_mut()
+                .unwrap()
+                .response_content_encoding_processing = HtpContentEncoding::None;
             return Ok(());
         }
         if encoding != HtpContentEncoding::None {

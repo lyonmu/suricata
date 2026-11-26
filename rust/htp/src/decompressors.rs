@@ -1,9 +1,10 @@
-use brotli;
+use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc, HuffmanCode};
 use nom::Parser as _;
 use std::{
     io::{Cursor, Write},
     time::Instant,
 };
+use zstd;
 
 /// Buffer compression output to this chunk size.
 const ENCODING_CHUNK_SIZE: usize = 8192;
@@ -213,6 +214,8 @@ pub(crate) enum HtpContentEncoding {
     Lzma,
     /// Brotli compression.
     Brotli,
+    /// Zstd compression.
+    Zstd,
 }
 
 //a cursor turning EOF into blocking errors
@@ -309,6 +312,7 @@ impl Decompressor {
             | HtpContentEncoding::Deflate
             | HtpContentEncoding::Zlib
             | HtpContentEncoding::Brotli
+            | HtpContentEncoding::Zstd
             | HtpContentEncoding::Lzma => Ok(Decompressor::new(Box::new(InnerDecompressor::new(
                 encoding, self.inner, options,
             )?))),
@@ -478,9 +482,14 @@ impl GzipBufWriter {
     }
 }
 
+fn take_with_finalzero(parse: &[u8]) -> nom::IResult<&[u8], &[u8]> {
+    use nom::bytes::streaming::{tag, take_until};
+    let (parse, _) = take_until::<&[u8], &[u8], nom::error::Error<&[u8]>>(b"\0" as &[u8])(parse)?;
+    tag(&b"\0"[..])(parse)
+}
+
 impl Write for GzipBufWriter {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        use nom::bytes::streaming::{tag, take_until};
         use nom::number::streaming::le_u16;
 
         const FHCRC: u8 = 1 << 1;
@@ -488,7 +497,7 @@ impl Write for GzipBufWriter {
         const FNAME: u8 = 1 << 3;
         const FCOMMENT: u8 = 1 << 4;
 
-        let (mut parse, direct) = if !self.buffer.is_empty() && self.state == GzState::Start {
+        let (mut parse, direct) = if !self.buffer.is_empty() && self.state != GzState::AfterHeader {
             self.buffer.extend_from_slice(data);
             (self.buffer.as_ref(), false)
         } else {
@@ -524,7 +533,12 @@ impl Write for GzipBufWriter {
                                 self.xlen = xlen;
                             }
                             Err(nom::Err::Incomplete(_)) => {
-                                return Ok(data.len() - parse.len());
+                                let pending = parse.to_vec();
+                                self.buffer.clear();
+                                self.buffer.extend_from_slice(&pending);
+                                // need to consume all bytes and not return Ok(0)
+                                // so we buffer the one byte already there
+                                return Ok(data.len());
                             }
                             Err(_) => {
                                 return Err(std::io::Error::new(
@@ -540,6 +554,7 @@ impl Write for GzipBufWriter {
                     if self.xlen > 0 {
                         if parse.len() < self.xlen as usize {
                             self.xlen -= parse.len() as u16;
+                            self.buffer.clear();
                             return Ok(data.len());
                         }
                         parse = &parse[self.xlen as usize..];
@@ -548,16 +563,12 @@ impl Write for GzipBufWriter {
                 }
                 GzState::Filename => {
                     if self.flags & FNAME != 0 {
-                        match (
-                            take_until::<&[u8], &[u8], nom::error::Error<&[u8]>>(b"\0" as &[u8]),
-                            tag(&b"\0"[..]),
-                        )
-                            .parse(parse)
-                        {
+                        match take_with_finalzero(parse) {
                             Ok((rest, _)) => {
                                 parse = rest;
                             }
                             Err(nom::Err::Incomplete(_)) => {
+                                self.buffer.clear();
                                 return Ok(data.len());
                             }
                             Err(_) => {
@@ -572,16 +583,12 @@ impl Write for GzipBufWriter {
                 }
                 GzState::Comment => {
                     if self.flags & FCOMMENT != 0 {
-                        match (
-                            take_until::<&[u8], &[u8], nom::error::Error<&[u8]>>(b"\0" as &[u8]),
-                            tag(&b"\0"[..]),
-                        )
-                            .parse(parse)
-                        {
+                        match take_with_finalzero(parse) {
                             Ok((rest, _)) => {
                                 parse = rest;
                             }
                             Err(nom::Err::Incomplete(_)) => {
+                                self.buffer.clear();
                                 return Ok(data.len());
                             }
                             Err(_) => {
@@ -601,7 +608,12 @@ impl Write for GzipBufWriter {
                                 parse = rest;
                             }
                             Err(nom::Err::Incomplete(_)) => {
-                                return Ok(data.len() - parse.len());
+                                let pending = parse.to_vec();
+                                self.buffer.clear();
+                                self.buffer.extend_from_slice(&pending);
+                                // need to consume all bytes and not return Ok(0)
+                                // so we buffer the one byte already there
+                                return Ok(data.len());
                             }
                             Err(_) => {
                                 return Err(std::io::Error::new(
@@ -728,9 +740,87 @@ impl BufWriter for LzmaBufWriter {
 }
 
 /// Simple wrapper around an lzma implementation
-struct BrotliBufWriter(brotli::DecompressorWriter<BlockingCursor>);
+struct BrotliBufWriter {
+    state: BrotliState<HeapAlloc<u8>, HeapAlloc<u32>, HeapAlloc<HuffmanCode>>,
+    cursor: BlockingCursor,
+}
+
+impl BrotliBufWriter {
+    pub fn new(cursor: BlockingCursor) -> BrotliBufWriter {
+        BrotliBufWriter {
+            state: BrotliState::new_strict(
+                HeapAlloc::<u8>::new(0),
+                HeapAlloc::<u32>::new(0),
+                HeapAlloc::<HuffmanCode>::new(HuffmanCode { bits: 0, value: 0 }),
+            ),
+            cursor,
+        }
+    }
+}
 
 impl Write for BrotliBufWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let start_offset = 0;
+        let mut input_offset = 0;
+        let mut available_in = buf.len() - input_offset;
+        let mut output_offset = self.cursor.cursor.position() as usize;
+        let mut available_out = self.cursor.cursor.get_ref().len() - output_offset;
+        let mut written = 0;
+        match BrotliDecompressStream(
+            &mut available_in,
+            &mut input_offset,
+            buf,
+            &mut available_out,
+            &mut output_offset,
+            self.cursor.cursor.get_mut(),
+            &mut written,
+            &mut self.state,
+        ) {
+            BrotliResult::ResultSuccess => {
+                self.cursor.cursor.set_position(output_offset as u64);
+                Ok(input_offset - start_offset)
+            }
+            BrotliResult::NeedsMoreInput => {
+                self.cursor.cursor.set_position(output_offset as u64);
+                Ok(input_offset - start_offset)
+            }
+            BrotliResult::NeedsMoreOutput => {
+                self.cursor.cursor.set_position(output_offset as u64);
+                if input_offset == start_offset {
+                    return Err(std::io::ErrorKind::WriteZero.into());
+                }
+                Ok(input_offset - start_offset)
+            }
+            BrotliResult::ResultFailure => {
+                Err(std::io::Error::other("Brotli decompression failed"))
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.write(&[])?;
+        Ok(())
+    }
+}
+
+impl BufWriter for BrotliBufWriter {
+    fn get_mut(&mut self) -> Option<&mut BlockingCursor> {
+        Some(&mut self.cursor)
+    }
+
+    fn finish(self: Box<Self>) -> std::io::Result<BlockingCursor> {
+        Ok(self.cursor)
+    }
+
+    fn try_finish(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Simple wrapper around an lzma implementation
+struct ZstdBufWriter<'a>(zstd::stream::write::Decoder<'a, BlockingCursor>);
+
+impl Write for ZstdBufWriter<'_> {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         self.0.write(data)
     }
@@ -740,15 +830,13 @@ impl Write for BrotliBufWriter {
     }
 }
 
-impl BufWriter for BrotliBufWriter {
+impl BufWriter for ZstdBufWriter<'_> {
     fn get_mut(&mut self) -> Option<&mut BlockingCursor> {
         Some(self.0.get_mut())
     }
 
     fn finish(self: Box<Self>) -> std::io::Result<BlockingCursor> {
-        self.0
-            .into_inner()
-            .map_err(|_e| std::io::Error::other("brotli"))
+        Ok(self.0.into_inner())
     }
 
     fn try_finish(&mut self) -> std::io::Result<()> {
@@ -789,13 +877,21 @@ impl InnerDecompressor {
                 Box::new(ZlibBufWriter(flate2::write::ZlibDecoder::new(buf))),
                 false,
             )),
-            HtpContentEncoding::Brotli => Ok((
-                Box::new(BrotliBufWriter(brotli::DecompressorWriter::new(
-                    buf,
-                    ENCODING_CHUNK_SIZE,
-                ))),
-                false,
-            )),
+            HtpContentEncoding::Brotli => Ok((Box::new(BrotliBufWriter::new(buf)), false)),
+            HtpContentEncoding::Zstd => {
+                if let Ok(mut z) = zstd::stream::write::Decoder::new(buf) {
+                    // 8 Mbytes max window like chromium to avoid overallocating
+                    if z.window_log_max(23).is_ok() {
+                        Ok((Box::new(ZstdBufWriter(z)), false))
+                    } else {
+                        Err(std::io::Error::other(
+                            "failed to set max window for zstd decoder",
+                        ))
+                    }
+                } else {
+                    Err(std::io::Error::other("failed to create zstd decoder"))
+                }
+            }
             HtpContentEncoding::Lzma => {
                 if let Some(options) = options.lzma {
                     Ok((
@@ -996,6 +1092,7 @@ impl Decompress for InnerDecompressor {
                 // For other encodings, we retry with deflate, zlib and gzip
                 HtpContentEncoding::Lzma => HtpContentEncoding::Deflate,
                 HtpContentEncoding::Brotli => HtpContentEncoding::Deflate,
+                HtpContentEncoding::Zstd => HtpContentEncoding::Deflate,
                 HtpContentEncoding::None => {
                     return Err(std::io::Error::other("expected a valid encoding"))
                 }
@@ -1111,11 +1208,11 @@ fn test_gz_header() {
     let input = b"\x1f\x8b\x08\x1e\x00\x00\x00\x00\x00\x00\x05\x00extrafilename\x00comment\x00\x34";
     let buf = BlockingCursor::new();
     let mut gzw = GzipBufWriter::new(buf);
-    assert_eq!(gzw.write(input).unwrap(), input.len() - 1);
+    assert_eq!(gzw.write(input).unwrap(), input.len());
     assert_eq!(gzw.state, GzState::Crc);
     // final missing CRC in header
     let input = b"\x34\xee";
-    assert_eq!(gzw.write(input).unwrap(), input.len());
+    assert_eq!(gzw.write(input).unwrap(), input.len() - 1);
     assert_eq!(gzw.state, GzState::AfterHeader);
     let input = b"\x1f\x8b\x08\x01\x00\x00\x00\x00\x00";
     let buf = BlockingCursor::new();

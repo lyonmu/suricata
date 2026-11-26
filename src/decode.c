@@ -163,6 +163,16 @@ void PacketAlertRecycle(PacketAlert *pa_array, uint16_t cnt)
     }
 }
 
+/** \brief Release the alert context the drop slot owns, then invalidate the slot.
+ *  Not an `alerts[]` entry, so clearing `action` alone leaves it owning the chain;
+ *  `action` is the guard consumers read, so a leaked slot still reads as empty.
+ */
+void PacketAlertDropReset(Packet *p)
+{
+    PacketAlertRecycle(&p->alerts.drop, 1);
+    p->alerts.drop.action = 0;
+}
+
 void PacketAlertFree(PacketAlert *pa_array)
 {
     if (pa_array == NULL)
@@ -180,10 +190,10 @@ void PacketAlertFree(PacketAlert *pa_array)
 }
 
 static int DecodeTunnel(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t,
-        enum DecodeTunnelProto) WARN_UNUSED;
+        enum SCPacketTunnelProto) WARN_UNUSED;
 
 static int DecodeTunnel(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, const uint8_t *pkt,
-        uint32_t len, enum DecodeTunnelProto proto)
+        uint32_t len, enum SCPacketTunnelProto proto)
 {
     switch (proto) {
         case DECODE_TUNNEL_PPP:
@@ -193,8 +203,7 @@ static int DecodeTunnel(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, const 
             return DecodeIPV4(tv, dtv, p, pkt, (uint16_t)len);
         case DECODE_TUNNEL_IPV6:
         case DECODE_TUNNEL_IPV6_TEREDO:
-            DEBUG_VALIDATE_BUG_ON(len > UINT16_MAX);
-            return DecodeIPV6(tv, dtv, p, pkt, (uint16_t)len);
+            return DecodeIPV6(tv, dtv, p, pkt, len);
         case DECODE_TUNNEL_VLAN:
             return DecodeVLAN(tv, dtv, p, pkt, len);
         case DECODE_TUNNEL_ETHERNET:
@@ -357,7 +366,11 @@ inline int PacketCopyDataOffset(Packet *p, uint32_t offset, const uint8_t *data,
             memcpy(GET_PKT_DIRECT_DATA(p) + offset, data, datalen);
         } else {
             /* here we need a dynamic allocation */
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+            p->ext_pkt = SCMalloc(offset + datalen);
+#else
             p->ext_pkt = SCMalloc(MAX_PAYLOAD_SIZE);
+#endif
             if (unlikely(p->ext_pkt == NULL)) {
                 SET_PKT_LEN(p, 0);
                 return -1;
@@ -386,18 +399,27 @@ inline int PacketCopyData(Packet *p, const uint8_t *pktdata, uint32_t pktlen)
     return PacketCopyDataOffset(p, 0, pktdata, pktlen);
 }
 
-/**
- *  \brief Setup a pseudo packet (tunnel)
- *
- *  \param parent parent packet for this pseudo pkt
- *  \param pkt raw packet data
- *  \param len packet data length
- *  \param proto protocol of the tunneled packet
- *
- *  \retval p the pseudo packet or NULL if out of memory
- */
-Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
-                             const uint8_t *pkt, uint32_t len, enum DecodeTunnelProto proto)
+static void *decode_tunnels_map;
+
+void PacketSetTunnelId(Packet *p, uint32_t session)
+{
+    if (p->tunnel_id) {
+        // set only the tunnel id for the first layer of encapsulation
+        return;
+    }
+    if (decode_tunnels_map == NULL || p->root == NULL || !PacketIsIPv4(p->root)) {
+        p->tunnel_id = 0;
+        return;
+    }
+    struct flowtunnel_keys k = {};
+    k.src = htonl(GET_IPV4_SRC_ADDR_U32(p->root));
+    k.dst = htonl(GET_IPV4_DST_ADDR_U32(p->root));
+    k.session = session;
+    k.tunnel_proto = (uint8_t)p->tproto;
+    p->tunnel_id = DecodeTunnelsId(decode_tunnels_map, k);
+}
+Packet *PacketTunnelPktSetupWithSession(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
+        const uint8_t *pkt, uint32_t len, enum SCPacketTunnelProto proto, uint32_t *session)
 {
     int ret;
 
@@ -435,6 +457,11 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
     }
     /* tell new packet it's part of a tunnel */
     p->ttype = PacketTunnelChild;
+    p->tproto = (uint8_t)proto;
+    p->tunnel_id = parent->tunnel_id;
+    if (session) {
+        PacketSetTunnelId(p, *session);
+    }
 
     ret = DecodeTunnel(tv, dtv, p, GET_PKT_DATA(p),
                        GET_PKT_LEN(p), proto);
@@ -460,6 +487,22 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
      * check it against the ip/port/other header checks though */
     DecodeSetNoPayloadInspectionFlag(parent);
     SCReturnPtr(p, "Packet");
+}
+
+/**
+ *  \brief Setup a pseudo packet (tunnel)
+ *
+ *  \param parent parent packet for this pseudo pkt
+ *  \param pkt raw packet data
+ *  \param len packet data length
+ *  \param proto protocol of the tunneled packet
+ *
+ *  \retval p the pseudo packet or NULL if out of memory
+ */
+Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
+        const uint8_t *pkt, uint32_t len, enum SCPacketTunnelProto proto)
+{
+    return PacketTunnelPktSetupWithSession(tv, dtv, parent, pkt, len, proto, NULL);
 }
 
 /**
@@ -497,16 +540,27 @@ Packet *PacketDefragPktSetup(Packet *parent, const uint8_t *pkt, uint32_t len, u
     /* tell new packet it's part of a tunnel */
     p->ttype = PacketTunnelChild;
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    if (!p->ext_pkt) {
+        p->ext_pkt = SCMalloc(MAX_PAYLOAD_SIZE);
+        if (unlikely(p->ext_pkt == NULL)) {
+            PacketFreeOrRelease(p);
+            return NULL;
+        }
+    }
+#endif
     /* copy packet and set length, proto */
     if (pkt && len) {
         PacketCopyData(p, pkt, len);
     }
     p->recursion_level = parent->recursion_level; /* NOT incremented */
+    p->nb_decoded_layers = parent->nb_decoded_layers;
     p->ts = parent->ts;
     p->tenant_id = parent->tenant_id;
     memcpy(&p->vlan_id[0], &parent->vlan_id[0], sizeof(p->vlan_id));
     p->vlan_idx = parent->vlan_idx;
     p->livedev_id = parent->livedev_id;
+    p->tunnel_id = parent->tunnel_id;
 
     SCReturnPtr(p, "Packet");
 }
@@ -613,6 +667,12 @@ void DecodeUnregisterCounters(void)
         g_counter_table = NULL;
     }
     SCMutexUnlock(&g_counter_table_mutex);
+}
+
+void DecodeGlobalConfigDeinit(void)
+{
+    DecodeTunnelsFree(decode_tunnels_map);
+    decode_tunnels_map = NULL;
 }
 
 static bool IsDefragMemcapExceptionPolicyStatsValid(enum ExceptionPolicy policy)
@@ -1147,6 +1207,10 @@ void DecodeGlobalConfig(void)
     DecodeGeneveConfig();
     DecodeVXLANConfig();
     DecodeERSPANConfig();
+    decode_tunnels_map = DecodeTunnelsConfig();
+    if (decode_tunnels_map && (EngineModeIsIPS() || EngineModeIsFirewall())) {
+        SCLogWarning("Tunnels are not meant to be used in IPS or firewall mode");
+    }
     intmax_t value = 0;
     if (SCConfGetInt("decoder.max-layers", &value) == 1) {
         if (value < 0 || value > UINT8_MAX) {

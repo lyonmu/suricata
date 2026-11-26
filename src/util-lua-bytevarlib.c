@@ -27,20 +27,39 @@
 
 static const char suricata_bytevar_mt[] = "suricata:bytevar:mt";
 
+/* handle = slot id + the signature whose extractor may have written it */
+typedef struct LuaBytevarHandle_ {
+    uint32_t id;
+    const Signature *sig;
+} LuaBytevarHandle;
+
 static DetectLuaData *GetLuaData(lua_State *luastate)
 {
-    DetectLuaData *ld;
-    lua_pushlightuserdata(luastate, (void *)&luaext_key_ld);
-    lua_gettable(luastate, LUA_REGISTRYINDEX);
-    ld = lua_touserdata(luastate, -1);
-    return ld;
+    return LuaStateGetDetectLuaData(luastate);
 }
 
 static int LuaBytevarMap(lua_State *L)
 {
+    DetectLuaData *ld = GetLuaData(L);
+    if (ld == NULL) {
+        return luaL_error(L, "bytevar API not available in this context");
+    }
+    /* map() appends to the shared DetectLuaData like the flowvar/flowint
+     * register() APIs: only allowed while init() runs */
+    if (!ld->register_in_init) {
+        return luaL_error(L, "bytevar.map() must be called from init()");
+    }
+    if (!lua_islightuserdata(L, -2)) {
+        return luaL_error(L, "bytevar.map: first argument must be the signature passed to init");
+    }
+    /* only the exact signature pointer the engine passed to init() is
+     * valid; the script could forge other lightuserdata values (e.g. from
+     * the registry) and map() must fail closed */
+    if (lua_touserdata(L, -2) != (void *)ld->signature) {
+        return luaL_error(L, "bytevar.map: first argument is not the signature passed to init");
+    }
     const Signature *s = lua_touserdata(L, -2);
     const char *name = luaL_checkstring(L, -1);
-    DetectLuaData *ld = GetLuaData(L);
 
     /* Is this name already mapped? */
     for (uint16_t i = 0; i < ld->bytevars; i++) {
@@ -50,8 +69,8 @@ static int LuaBytevarMap(lua_State *L)
         }
     }
 
-    if (ld->bytevars == DETECT_LUA_MAX_BYTEVARS) {
-        luaL_error(L, "too many bytevars mapped");
+    if (ld->bytevars >= DETECT_LUA_MAX_BYTEVARS) {
+        return luaL_error(L, "too many bytevars mapped");
     }
 
     DetectByteIndexType idx;
@@ -61,7 +80,7 @@ static int LuaBytevarMap(lua_State *L)
 
     ld->bytevar[ld->bytevars].name = SCStrdup(name);
     if (ld->bytevar[ld->bytevars].name == NULL) {
-        luaL_error(L, "failed to allocate memory for bytevar name: %s", name);
+        return luaL_error(L, "failed to allocate memory for bytevar name: %s", name);
     }
     ld->bytevar[ld->bytevars++].id = idx;
 
@@ -78,8 +97,12 @@ static int LuaBytevarGet(lua_State *L)
 
     for (uint16_t i = 0; i < ld->bytevars; i++) {
         if (strcmp(ld->bytevar[i].name, name) == 0) {
-            uint32_t *bytevar_id = lua_newuserdata(L, sizeof(*bytevar_id));
-            *bytevar_id = ld->bytevar[i].id;
+            LuaBytevarHandle *handle = SCLuaNewUserData(L, SCLUA_TUD_BYTEVAR, sizeof(*handle));
+            if (handle == NULL) {
+                return LuaCallbackError(L, "error: failed to allocate user data");
+            }
+            handle->id = ld->bytevar[i].id;
+            handle->sig = ld->signature;
             luaL_getmetatable(L, suricata_bytevar_mt);
             lua_setmetatable(L, -2);
             return 1;
@@ -91,12 +114,38 @@ static int LuaBytevarGet(lua_State *L)
 
 static int LuaBytevarValue(lua_State *L)
 {
-    uint32_t *bytevar_id = luaL_checkudata(L, 1, suricata_bytevar_mt);
+    LuaBytevarHandle *handle = SCLuaCheckUserData(L, 1, suricata_bytevar_mt, SCLUA_TUD_BYTEVAR);
+    if (handle == NULL) {
+        lua_pushnil(L);
+        return 1;
+    }
     DetectEngineThreadCtx *det_ctx = LuaStateGetDetCtx(L);
     if (det_ctx == NULL) {
         return LuaCallbackError(L, "internal error: no det_ctx");
     }
-    lua_pushinteger(L, det_ctx->byte_values[*bytevar_id]);
+
+    const int32_t max_id = det_ctx->de_ctx->byte_extract_max_local_id;
+    if ((int32_t)handle->id < 0 || (int32_t)handle->id > max_id) {
+        return LuaCallbackError(L, "bytevar index out of range");
+    }
+
+    /* the slot is only valid once an extractor wrote it this detect
+     * run; an unwritten slot is stale (previous run) or uninitialized,
+     * so report it as unset rather than leaking that value to the script */
+    if (det_ctx->byte_values[handle->id].set == 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    /* the local id is shared across signatures (the first extractor of
+     * every rule is slot 0): only the value this rule's extractor wrote
+     * this run is this rule's to read */
+    if (det_ctx->byte_values[handle->id].writer != handle->sig) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_pushinteger(L, det_ctx->byte_values[handle->id].value);
     return 1;
 }
 

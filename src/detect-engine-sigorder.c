@@ -33,7 +33,6 @@
 #include "detect-pcre.h"
 #include "detect-engine-build.h"
 
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-debug.h"
 #include "util-action.h"
@@ -413,7 +412,7 @@ static inline int SCSigGetXbitsType(Signature *sig, enum VarTypes type)
     SigMatch *sm = sig->init_data->smlists[DETECT_SM_LIST_MATCH];
 
     while (sm != NULL) {
-        if (sm->type == DETECT_XBITS) {
+        if (sm->type == DETECT_XBITS || sm->type == DETECT_HOSTBITS) {
             fb = (DetectXbitsData *)sm->ctx;
             if (fb->type == type) {
                 if (fb->cmd == DETECT_XBITS_CMD_ISNOTSET ||
@@ -432,7 +431,7 @@ static inline int SCSigGetXbitsType(Signature *sig, enum VarTypes type)
 
     sm = sig->init_data->smlists[DETECT_SM_LIST_POSTMATCH];
     while (sm != NULL) {
-        if (sm->type == DETECT_HOSTBITS) {
+        if (sm->type == DETECT_XBITS || sm->type == DETECT_HOSTBITS) {
             fb = (DetectXbitsData *)sm->ctx;
             if (fb->type == type) {
                 if (fb->cmd == DETECT_XBITS_CMD_SET ||

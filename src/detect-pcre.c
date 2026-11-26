@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2025 Open Information Security Foundation
+/* Copyright (C) 2007-2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -46,7 +46,6 @@
 #include "util-var-name.h"
 #include "util-unittest-helper.h"
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-print.h"
 #include "util-pool.h"
 
@@ -249,6 +248,12 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
     pcre2_match_data *match =
             (pcre2_match_data *)DetectThreadCtxGetKeywordThreadCtx(det_ctx, pe->thread_ctx_id);
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    det_ctx->fuzzed_pcre_len += len;
+    if (det_ctx->fuzzed_pcre_len > 0x20000) { // 128 kilobytes
+        SCReturnInt(0);
+    }
+#endif
     ret = DetectPcreExec(det_ctx, pe, (char *)ptr, len, start_offset, 0, match);
     SCLogDebug("ret %d (negating %s)", ret, (pe->flags & DETECT_PCRE_NEGATE) ? "set" : "not set");
 
@@ -276,6 +281,10 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
                 uint8_t x;
                 for (x = 0; x < pe->idx; x++) {
                     SCLogDebug("capturing %u", x);
+                    if (pe->captypes[x] == VAR_TYPE_FLOW_VAR && f == NULL) {
+                        /* no flow to store the capture in, so don't extract it. */
+                        continue;
+                    }
                     const char *pcre2_str_ptr = NULL;
                     ret = pcre2_substring_get_bynumber(
                             match, x + 1, (PCRE2_UCHAR8 **)&pcre2_str_ptr, &capture_len);
@@ -327,7 +336,7 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
                         (void)DetectVarStoreMatch(det_ctx, pe->capids[x], (uint8_t *)str_ptr,
                                 (uint16_t)capture_len, DETECT_VAR_TYPE_PKT_POSTMATCH);
 
-                    } else if (pe->captypes[x] == VAR_TYPE_FLOW_VAR && f != NULL) {
+                    } else if (pe->captypes[x] == VAR_TYPE_FLOW_VAR) {
                         (void)DetectVarStoreMatch(det_ctx, pe->capids[x], (uint8_t *)str_ptr,
                                 (uint16_t)capture_len, DETECT_VAR_TYPE_FLOW_POSTMATCH);
 
@@ -336,7 +345,7 @@ int DetectPcrePayloadMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
                                 (uint16_t)capture_len);
 
                     } else {
-                        BUG_ON(1); // Impossible captype
+                        DEBUG_VALIDATE_BUG_ON(1); // Impossible captype
                         SCFree(str_ptr);
                     }
                 }
@@ -368,7 +377,18 @@ static int DetectPcreSetList(int list, int set)
 
 static bool DetectPcreHasUnicodeCluster(const char *re)
 {
-    return strstr(re, "\\X") != NULL;
+    bool escaping = false;
+    for (const char *p = re; *p != 0; p++) {
+        if (escaping) {
+            if (*p == 'X') {
+                return true;
+            }
+            escaping = false;
+        } else if (*p == '\\') {
+            escaping = true;
+        }
+    }
+    return false;
 }
 
 static int DetectPcreHasUpperCase(const char *re)
@@ -1042,8 +1062,11 @@ static int DetectPcreSetup (DetectEngineCtx *de_ctx, Signature *s, const char *r
 
     /* errors below shouldn't free pd */
 
-    SigMatch *prev_pm = DetectGetLastSMByListPtr(s, sm->prev,
-            DETECT_CONTENT, DETECT_PCRE, -1);
+    /* Besides content and pcre, the keywords that move the detection pointer by
+     * updating det_ctx->buffer_offset also anchor a relative match. byte_test
+     * and isdataat only read that pointer, so they are not accepted here. */
+    SigMatch *prev_pm = DetectGetLastSMByListPtr(s, sm->prev, DETECT_CONTENT, DETECT_PCRE,
+            DETECT_BYTEJUMP, DETECT_BYTE_EXTRACT, DETECT_BYTEMATH, -1);
     if (s->init_data->list == DETECT_SM_LIST_NOTSET && prev_pm == NULL) {
         SCLogError("pcre with /R (relative) needs "
                    "preceding match in the same buffer");
@@ -1568,6 +1591,61 @@ static int DetectPcreParseTest28(void)
             "(content:\"|2E|suricata\"; http_host; pcre:\"/\\x2Esuricata$/W\"; "
             "sid:2; rev:2;)");
     FAIL_IF_NULL(de_ctx->sig_list);
+
+    DetectEngineCtxFree(de_ctx);
+    PASS;
+}
+
+/** \test #7987 a relative pcre is anchored on the keywords that move the
+ *          detection pointer, not just on content and pcre. */
+static int DetectPcreParseTest29(void)
+{
+    DetectEngineCtx *de_ctx = DetectEngineCtxInit();
+
+    FAIL_IF_NULL(de_ctx);
+
+    de_ctx->flags |= DE_QUIET;
+
+    de_ctx->sig_list =
+            SigInit(de_ctx, "alert tcp any any -> any any (msg:\"byte_jump\"; byte_jump:4,0; "
+                            "pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    de_ctx->sig_list = SigInit(de_ctx, "alert tcp any any -> any any (msg:\"relative byte_jump\"; "
+                                       "byte_jump:4,0,relative; pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    de_ctx->sig_list = SigInit(de_ctx, "alert tcp any any -> any any (msg:\"byte_extract\"; "
+                                       "byte_extract:4,0,len; pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    de_ctx->sig_list =
+            SigInit(de_ctx, "alert tcp any any -> any any (msg:\"byte_math\"; "
+                            "byte_math: bytes 4, offset 0, oper +, rvalue 0, result len; "
+                            "pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    /* byte_test and isdataat only read the detection pointer, so they are still
+     * no preceding match for a relative pcre. */
+    de_ctx->sig_list =
+            SigInit(de_ctx, "alert tcp any any -> any any (msg:\"byte_test\"; byte_test:4,=,0,0; "
+                            "pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NOT_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    de_ctx->sig_list =
+            SigInit(de_ctx, "alert tcp any any -> any any (msg:\"isdataat\"; isdataat:10; "
+                            "pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NOT_NULL(de_ctx->sig_list);
+    SigCleanSignatures(de_ctx);
+
+    de_ctx->sig_list = SigInit(de_ctx,
+            "alert tcp any any -> any any (msg:\"no match\"; pcre:\"/abc/R\"; sid:1; rev:1;)");
+    FAIL_IF_NOT_NULL(de_ctx->sig_list);
 
     DetectEngineCtxFree(de_ctx);
     PASS;
@@ -2103,6 +2181,7 @@ static void DetectPcreRegisterTests(void)
     UtRegisterTest("DetectPcreParseTest26", DetectPcreParseTest26);
     UtRegisterTest("DetectPcreParseTest27", DetectPcreParseTest27);
     UtRegisterTest("DetectPcreParseTest28", DetectPcreParseTest28);
+    UtRegisterTest("DetectPcreParseTest29", DetectPcreParseTest29);
 
     UtRegisterTest("DetectPcreTestSig01", DetectPcreTestSig01);
     UtRegisterTest("DetectPcreTestSig02 -- anchored pcre", DetectPcreTestSig02);

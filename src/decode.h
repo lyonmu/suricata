@@ -24,6 +24,22 @@
 #ifndef SURICATA_DECODE_H
 #define SURICATA_DECODE_H
 
+enum SCPacketTunnelProto {
+    DECODE_TUNNEL_ETHERNET,
+    DECODE_TUNNEL_ERSPANII,
+    DECODE_TUNNEL_ERSPANI,
+    DECODE_TUNNEL_VXLAN,
+    DECODE_TUNNEL_VLAN,
+    DECODE_TUNNEL_IPV4,
+    DECODE_TUNNEL_IPV6,
+    DECODE_TUNNEL_IPV6_TEREDO, /**< separate protocol for stricter error handling */
+    DECODE_TUNNEL_PPP,
+    DECODE_TUNNEL_NSH,
+    DECODE_TUNNEL_ARP,
+    DECODE_TUNNEL_UNSET
+};
+
+#ifndef SURICATA_BINDGEN_H
 //#define DBG_THREADS
 #define COUNTERS
 
@@ -32,6 +48,7 @@
 #include "threadvars.h"
 #include "util-debug.h"
 #include "decode-events.h"
+#include "packet-bindgen.h"
 #include "util-exception-policy-types.h"
 #include "util-datalink.h"
 #ifdef PROFILING
@@ -296,8 +313,10 @@ typedef struct PacketAlerts_ {
     PacketAlert drop;
 } PacketAlerts;
 
+struct Packet_;
 PacketAlert *PacketAlertCreate(void);
 void PacketAlertRecycle(PacketAlert *pa_array, uint16_t cnt);
+void PacketAlertDropReset(struct Packet_ *p);
 
 void PacketAlertFree(PacketAlert *pa);
 
@@ -434,13 +453,6 @@ struct PacketL2 {
     } hdrs;
 };
 
-enum PacketL3Types {
-    PACKET_L3_UNKNOWN = 0,
-    PACKET_L3_IPV4,
-    PACKET_L3_IPV6,
-    PACKET_L3_ARP,
-};
-
 struct PacketL3 {
     enum PacketL3Types type;
     /* Checksum for IP packets. */
@@ -540,6 +552,11 @@ typedef struct Packet_
      * has the exact same tuple as the lower levels */
     uint8_t recursion_level;
 
+    /* tunnel id if any, PKT_TUNNEL_UNKNOWN if unknown, 0 if none
+     * tunnel ids are configured in suricata.yaml decoder.tunnels section
+     */
+    uint16_t tunnel_id;
+
     uint16_t vlan_id[VLAN_MAX_LAYERS];
     uint8_t vlan_idx;
 
@@ -557,6 +574,9 @@ typedef struct Packet_
 
     /* tunnel type: none, root or child */
     uint8_t ttype; // enum PacketTunnelType
+
+    /* tunnel protocol */
+    uint8_t tproto; // enum SCPacketTunnelProto
 
     /* Pkt Flags */
     uint32_t flags;
@@ -1140,23 +1160,11 @@ static inline void PacketTunnelSetVerdicted(Packet *p)
     p->tunnel_verdicted = true;
 }
 
-enum DecodeTunnelProto {
-    DECODE_TUNNEL_ETHERNET,
-    DECODE_TUNNEL_ERSPANII,
-    DECODE_TUNNEL_ERSPANI,
-    DECODE_TUNNEL_VXLAN,
-    DECODE_TUNNEL_VLAN,
-    DECODE_TUNNEL_IPV4,
-    DECODE_TUNNEL_IPV6,
-    DECODE_TUNNEL_IPV6_TEREDO, /**< separate protocol for stricter error handling */
-    DECODE_TUNNEL_PPP,
-    DECODE_TUNNEL_NSH,
-    DECODE_TUNNEL_ARP,
-    DECODE_TUNNEL_UNSET
-};
-
 Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
-                             const uint8_t *pkt, uint32_t len, enum DecodeTunnelProto proto);
+        const uint8_t *pkt, uint32_t len, enum SCPacketTunnelProto proto);
+Packet *PacketTunnelPktSetupWithSession(ThreadVars *tv, DecodeThreadVars *dtv, Packet *parent,
+        const uint8_t *pkt, uint32_t len, enum SCPacketTunnelProto proto, uint32_t *session);
+void PacketSetTunnelId(Packet *p, uint32_t session);
 Packet *PacketDefragPktSetup(Packet *parent, const uint8_t *pkt, uint32_t len, uint8_t proto);
 void PacketDefragPktSetupParent(Packet *parent);
 void DecodeRegisterPerfCounters(DecodeThreadVars *, ThreadVars *);
@@ -1191,7 +1199,7 @@ int DecodePPPOEDiscovery(ThreadVars *, DecodeThreadVars *, Packet *, const uint8
 int DecodeNull(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
 int DecodeRaw(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
 int DecodeIPV4(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint16_t);
-int DecodeIPV6(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint16_t);
+int DecodeIPV6(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
 int DecodeICMPV4(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
 int DecodeICMPV6(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint32_t);
 int DecodeTCP(ThreadVars *, DecodeThreadVars *, Packet *, const uint8_t *, uint16_t);
@@ -1227,6 +1235,7 @@ typedef int (*DecoderFunc)(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
 void DecodeGlobalConfig(void);
 void PacketAlertGetMaxConfig(void);
 void DecodeUnregisterCounters(void);
+void DecodeGlobalConfigDeinit(void);
 
 #define ENGINE_SET_EVENT(p, e) do { \
     SCLogDebug("p %p event %d", (p), e); \
@@ -1503,8 +1512,7 @@ static inline bool DecodeNetworkLayer(ThreadVars *tv, DecodeThreadVars *dtv,
             break;
         }
         case ETHERNET_TYPE_IPV6: {
-            uint16_t ip_len = (len < USHRT_MAX) ? (uint16_t)len : (uint16_t)USHRT_MAX;
-            DecodeIPV6(tv, dtv, p, data, ip_len);
+            DecodeIPV6(tv, dtv, p, data, len);
             break;
         }
         case ETHERNET_TYPE_PPPOE_SESS:
@@ -1557,6 +1565,7 @@ static inline bool DecodeNetworkLayer(ThreadVars *tv, DecodeThreadVars *dtv,
     }
     return true;
 }
+#endif // SURICATA_BINDGEN_H
 
 uint64_t PcapPacketCntGet(const Packet *p);
 void PcapPacketCntSet(Packet *p, uint64_t pcap_cnt);

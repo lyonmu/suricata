@@ -248,14 +248,12 @@
 #include "util-classification-config.h"
 #include "util-threshold-config.h"
 #include "util-print.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-debug.h"
 #include "util-hashlist.h"
 #include "util-privs.h"
 #include "util-profiling.h"
 #include "util-validate.h"
-#include "util-optimize.h"
 #include "util-path.h"
 #include "util-mpm-ac.h"
 #include "runmodes.h"
@@ -334,13 +332,19 @@ static void PrintFeatureList(const SigTableElmt *e, char sep)
     if (flags & SIGMATCH_BAN_FIREWALL_RULE) {
         if (prev == 1)
             printf("%c", sep);
-        printf("banned from firewall rules");
+        printf("not supported in firewall rules");
         prev = 1;
     }
     if (flags & SIGMATCH_BAN_FIREWALL_MODE) {
         if (prev == 1)
             printf("%c", sep);
-        printf("banned from firewall mode");
+        printf("not supported in firewall mode");
+        prev = 1;
+    }
+    if (flags & SIGMATCH_BAN_TD_FIREWALL_MODE) {
+        if (prev == 1)
+            printf("%c", sep);
+        printf("not supported in threat detection rules in firewall mode");
         prev = 1;
     }
     if (e->Transform) {
@@ -374,6 +378,101 @@ static void SigMultilinePrint(size_t i, const char *prefix)
         printf("\n%sReplaced by: %s", prefix, sigmatch_table[sigmatch_table[i].alternative].name);
     }
     printf("\n");
+}
+
+static void SigJsonPrint(void)
+{
+    SCJsonBuilder *js = SCJbNewObject();
+    if (unlikely(js == NULL)) {
+        return;
+    }
+
+    for (size_t i = 0; i < (size_t)DETECT_TBLSIZE; i++) {
+        if (sigmatch_table[i].name == NULL)
+            continue;
+        // do not show __flowvar__postmatch__ and such
+        if (sigmatch_table[i].name[0] == '_')
+            continue;
+
+        SCJbOpenObject(js, sigmatch_table[i].name);
+        if (sigmatch_table[i].desc) {
+            SCJbSetString(js, "description", sigmatch_table[i].desc);
+        }
+        if (sigmatch_table[i].url) {
+            char urldoc[2048];
+            snprintf(urldoc, sizeof(urldoc), "%s%s", GetDocURL(), sigmatch_table[i].url);
+            SCJbSetString(js, "doc", urldoc);
+        }
+        if (sigmatch_table[i].alternative) {
+            SCJbSetString(js, "alternative", sigmatch_table[sigmatch_table[i].alternative].name);
+        }
+        if (sigmatch_table[i].alias) {
+            SCJbSetString(js, "alias", sigmatch_table[i].alias);
+        }
+        SCJbOpenArray(js, "features");
+
+        const uint32_t flags = sigmatch_table[i].flags;
+        if (flags & SIGMATCH_NOOPT) {
+            SCJbAppendString(js, "No option");
+        }
+        if (flags & SIGMATCH_IPONLY_COMPAT) {
+            SCJbAppendString(js, "compatible with IP only rule");
+        }
+        if (flags & SIGMATCH_DEONLY_COMPAT) {
+            SCJbAppendString(js, "compatible with decoder event only rule");
+        }
+        if (flags & SIGMATCH_INFO_CONTENT_MODIFIER) {
+            SCJbAppendString(js, "content modifier");
+        }
+        if (flags & SIGMATCH_INFO_STICKY_BUFFER) {
+            SCJbAppendString(js, "sticky buffer");
+        }
+        if (flags & SIGMATCH_SUPPORT_FIREWALL) {
+            SCJbAppendString(js, "supports firewall");
+        }
+        if (flags & SIGMATCH_INFO_MULTI_BUFFER) {
+            SCJbAppendString(js, "multi buffer");
+        }
+        if (flags & (SIGMATCH_INFO_UINT8 | SIGMATCH_INFO_UINT16 | SIGMATCH_INFO_UINT32 |
+                            SIGMATCH_INFO_UINT64)) {
+            if (flags & SIGMATCH_INFO_MULTI_UINT)
+                SCJbAppendString(js, "multi uint");
+            if (flags & SIGMATCH_INFO_ENUM_UINT)
+                SCJbAppendString(js, "enum uint");
+            if (flags & SIGMATCH_INFO_BITFLAGS_UINT)
+                SCJbAppendString(js, "bitflags");
+            if (flags & SIGMATCH_INFO_UINT8)
+                SCJbAppendString(js, "uint8");
+            if (flags & SIGMATCH_INFO_UINT16)
+                SCJbAppendString(js, "uint16");
+            if (flags & SIGMATCH_INFO_UINT32)
+                SCJbAppendString(js, "uint32");
+            if (flags & SIGMATCH_INFO_UINT64)
+                SCJbAppendString(js, "uint64");
+        }
+        if (flags & SIGMATCH_BAN_FIREWALL_RULE) {
+            SCJbAppendString(js, "not supported for firewall rules");
+        }
+        if (flags & SIGMATCH_BAN_FIREWALL_MODE) {
+            SCJbAppendString(js, "not supported for firewall mode");
+        }
+        if (sigmatch_table[i].Transform) {
+            SCJbAppendString(js, "transform");
+        }
+        if (sigmatch_table[i].SupportsPrefilter) {
+            SCJbAppendString(js, "prefilter");
+        }
+        SCJbClose(js);
+
+        if (sigmatch_table[i].JsonAdditionalInfo) {
+            sigmatch_table[i].JsonAdditionalInfo(js);
+        }
+        SCJbClose(js); // SCJbOpenObject keyword name
+    }
+
+    SCJbClose(js);
+    fwrite(SCJbPtr(js), SCJbLen(js), 1, stdout);
+    SCJbFree(js);
 }
 
 /** \brief Check if a keyword exists. */
@@ -443,6 +542,9 @@ int SigTableList(const char *keyword)
                 SigMultilinePrint(i, "\t");
             }
         }
+    } else if (strcmp("json", keyword) == 0) {
+        SigJsonPrint();
+        return TM_ECODE_DONE;
     } else {
         for (i = 0; i < size; i++) {
             if ((sigmatch_table[i].name != NULL) &&

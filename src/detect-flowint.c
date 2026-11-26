@@ -34,7 +34,6 @@
 #include "util-spm.h"
 #include "util-var-name.h"
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #include "detect-parse.h"
@@ -153,16 +152,22 @@ int DetectFlowintMatch(DetectEngineThreadCtx *det_ctx,
     if (fv != NULL && fv->datatype == FLOWVAR_TYPE_INT) {
         if (sfd->modifier == FLOWINT_MODIFIER_ADD) {
             SCLogDebug("Adding %u to %s", targetval, sfd->name);
-            FlowVarAddIntNoLock(p->flow, sfd->idx, fv->data.fv_int.value +
-                           targetval);
+            uint32_t val = UINT32_MAX;
+            if (targetval < UINT32_MAX - fv->data.fv_int.value) {
+                val = fv->data.fv_int.value + targetval;
+            }
+            FlowVarAddIntNoLock(p->flow, sfd->idx, val);
             ret = 1;
             goto end;
         }
 
         if (sfd->modifier == FLOWINT_MODIFIER_SUB) {
             SCLogDebug("Subtracting %u to %s", targetval, sfd->name);
-            FlowVarAddIntNoLock(p->flow, sfd->idx, fv->data.fv_int.value -
-                           targetval);
+            uint32_t val = 0;
+            if (targetval < fv->data.fv_int.value) {
+                val = fv->data.fv_int.value - targetval;
+            }
+            FlowVarAddIntNoLock(p->flow, sfd->idx, val);
             ret = 1;
             goto end;
         }

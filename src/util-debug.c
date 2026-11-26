@@ -34,7 +34,10 @@
 #include "util-enum.h"
 #include "util-path.h"
 #include "util-syslog.h"
-#include "util-time.h"
+
+#ifdef OS_WIN32
+#include "win32-misc.h"
+#endif /* OS_WIN32 */
 
 // clang-format off
 /* holds the string-enum mapping for the enums held in the table SCLogLevel */
@@ -245,7 +248,11 @@ static int SCLogMessageJSON(SCTime_t tval, char *buffer, size_t buffer_size, SCL
     SCJbClose(js); // engine
 
     SCJbClose(js);
-    memcpy(buffer, SCJbPtr(js), MIN(buffer_size, SCJbLen(js)));
+    /* reserve 1 byte for the NUL: the buffer is consumed as a C string by
+     * the stream and syslog sinks */
+    const size_t len = MIN(buffer_size - 1, (size_t)SCJbLen(js));
+    memcpy(buffer, SCJbPtr(js), len);
+    buffer[len] = '\0';
 
     SCJbFree(js);
 
@@ -632,7 +639,7 @@ static int SCLogReopen(SCLogOPIfaceCtx *op_iface_ctx)
     if (op_iface_ctx->file_d != NULL) {
         fclose(op_iface_ctx->file_d);
     }
-    op_iface_ctx->file_d = fopen(op_iface_ctx->file, "a");
+    op_iface_ctx->file_d = SCFopenLogFile(op_iface_ctx->file, "a");
     if (op_iface_ctx->file_d == NULL) {
         return -1;
     }
@@ -847,7 +854,8 @@ static inline SCLogOPIfaceCtx *SCLogInitFileOPIface(const char *file, uint32_t u
     iface_ctx->iface = SC_LOG_OP_IFACE_FILE;
     iface_ctx->type = type;
 
-    if ( (iface_ctx->file_d = fopen(file, "a")) == NULL) {
+    iface_ctx->file_d = SCFopenLogFile(file, "a");
+    if (iface_ctx->file_d == NULL) {
         SCLogWarning("error opening file %s: %s", file, strerror(errno));
         goto error;
     }

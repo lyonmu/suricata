@@ -59,8 +59,8 @@
 #include "flow-storage.h"
 
 #include "app-layer-expectation.h"
-
-#include "util-print.h"
+#include "ippair.h"
+#include "util-debug.h"
 
 static SCIPPairStorageId g_ippair_expectation_id = { .id = -1 };
 static SCFlowStorageId g_flow_expectation_id = { .id = -1 };
@@ -257,8 +257,10 @@ int AppLayerExpectationCreate(Flow *f, int direction, Port src, Port dst,
         }
     } else {
         exp_list = SCCalloc(1, sizeof(*exp_list));
-        if (exp_list == NULL)
+        if (exp_list == NULL) {
+            IPPairRelease(ipp);
             goto error;
+        }
         exp_list->length = 0;
         CIRCLEQ_INIT(&exp_list->list);
         CIRCLEQ_INSERT_HEAD(&exp_list->list, exp, entries);

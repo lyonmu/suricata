@@ -27,6 +27,7 @@
 #include "suricata-common.h"
 #include "flow.h"
 
+#include "app-layer-parser.h"
 #include "detect-engine-proto.h"
 #include "detect-reference.h"
 #include "detect-metadata.h"
@@ -108,35 +109,6 @@ extern const struct SignatureProperties signature_properties[SIG_TYPE_MAX];
    - Flow direction
    -- Protocol
 */
-
-/* holds the values for different possible lists in struct Signature.
- * These codes are access points to particular lists in the array
- * Signature->init_data->smlists[DETECT_SM_LIST_MAX]. */
-enum DetectSigmatchListEnum {
-    /* list for non-payload per packet matches, e.g. ttl, flow keyword */
-    DETECT_SM_LIST_MATCH = 0,
-    /* list for payload and stream match */
-    DETECT_SM_LIST_PMATCH,
-
-    /* base64_data keyword uses some hardcoded logic so consider
-     * built-in
-     * TODO convert to inspect engine */
-    DETECT_SM_LIST_BASE64_DATA,
-
-    /* list for post match actions: flowbit set, flowint increment, etc */
-    DETECT_SM_LIST_POSTMATCH,
-
-    DETECT_SM_LIST_TMATCH, /**< post-detection tagging */
-
-    /* lists for alert thresholding and suppression */
-    DETECT_SM_LIST_SUPPRESS,
-    DETECT_SM_LIST_THRESHOLD,
-
-    DETECT_SM_LIST_MAX,
-
-    /* start of dynamically registered lists */
-    DETECT_SM_LIST_DYNAMIC_START = DETECT_SM_LIST_MAX,
-};
 
 /* used for Signature->list, which indicates which list
  * we're adding keywords to in cases of sticky buffers like
@@ -458,6 +430,9 @@ typedef struct DetectBufferType_ {
     bool mpm;
     bool packet; /**< compat to packet matches */
     bool frame;  /**< is about Frame inspection */
+    /** the buffer's keywords can change as the transaction advances: run
+     *  the inspect engine on every tx update instead of only at its progress. */
+    bool run_always;
     bool supports_transforms;
     bool multi_instance; /**< buffer supports multiple buffer instances per tx */
     void (*SetupCallback)(
@@ -723,6 +698,10 @@ typedef struct Signature_ {
 
     /** firewall: progress value for this signature */
     uint8_t app_progress_hook;
+    /** firewall: sub state (transaction type) of the hook on protocols with sub
+     *  states (http2 stream/global, DoH2); 0 when the hook has no sub state.
+     *  Signatures are zero initialized, so unused stays 0. */
+    uint8_t sub_state;
 
     DetectMatchAddressIPv4 *addr_dst_match4;
     DetectMatchAddressIPv4 *addr_src_match4;
@@ -1258,8 +1237,10 @@ typedef struct SignatureNonPrefilterStore_ {
 
 /** array of TX inspect rule candidates */
 typedef struct RuleMatchCandidateTx {
-    SigIntId id;            /**< internal signature id */
-    uint32_t *flags;        /**< inspect flags ptr */
+    SigIntId id;           /**< internal signature id */
+    bool fw_lte_counted;   /**< counted in the firewall LTE hook coverage */
+    bool fw_lte_header_ok; /**< firewall LTE coverage already passed the rule header check */
+    uint32_t *flags;       /**< inspect flags ptr */
     union {
         struct {
             bool stream_stored;
@@ -1300,6 +1281,14 @@ typedef struct SigJsonContent {
     char json_content[SIG_JSON_CONTENT_ITEM_LEN];
 } SigJsonContent;
 
+/* byte_extract/byte_math slot: the value, the "written this detect
+ * run" marker and the writing signature */
+typedef struct ByteVarSlot_ {
+    uint64_t value;
+    uint8_t set;
+    const Signature *writer;
+} ByteVarSlot;
+
 /**
   * Detection engine thread data.
   */
@@ -1337,12 +1326,16 @@ typedef struct DetectEngineThreadCtx_ {
      * prototype held by DetectEngineCtx. */
     SpmThreadCtx *spm_thread_ctx;
 
-    /* byte_* values */
-    uint64_t *byte_values;
+    /* byte_extract/byte_math slots: value + "written this detect run"
+     * marker + writing signature, cleared per run for the slots the run
+     * wrote; an unwritten slot reads as unset (nil) to scripts */
+    ByteVarSlot *byte_values;
 
     SigJsonContent *json_content;
     uint8_t json_content_capacity;
     uint8_t json_content_len;
+    /* true if tx_id is set */
+    bool tx_id_set;
 
     /* counter for the filestore array below -- up here for cache reasons. */
     uint16_t filestore_cnt;
@@ -1358,6 +1351,9 @@ typedef struct DetectEngineThreadCtx_ {
 #ifdef PROFILING
     StatsCounterAvgId counter_mpm_list;
     StatsCounterAvgId counter_match_list;
+#endif
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    uint64_t fuzzed_pcre_len;
 #endif
 
     struct {
@@ -1376,10 +1372,12 @@ typedef struct DetectEngineThreadCtx_ {
         uint32_t *to_clear_queue;
     } multi_inspect;
 
-    /* true if tx_id is set */
-    bool tx_id_set;
     /** ID of the transaction currently being inspected. */
     uint64_t tx_id;
+    /** Transaction data of the transaction currently being inspected, as the
+     *  app-layer parser knows it (the flow's own transaction, not an inner one
+     *  handed to a keyword). Valid while tx_id_set is true. */
+    struct AppLayerTxData *tx_data;
     int64_t frame_id;
     uint64_t frame_inspect_progress; /**< used to set Frame::inspect_progress after all inspection
                                         on a frame is complete. */
@@ -1406,6 +1404,14 @@ typedef struct DetectEngineThreadCtx_ {
 
     RuleMatchCandidateTx *tx_candidates;
     uint32_t tx_candidates_size;
+    /* highest slot index written this run, -1 if none; the per-run
+     * clear only walks up to it */
+    int32_t byte_values_max;
+
+    /** Per hook LTE coverage of the current tx walk. Kept here instead of in
+     *  the per-tx firewall state so IDS traffic does not pay to clear it.
+     *  Cleared by the firewall coverage build on first use in a walk. */
+    uint32_t fw_lte_cover[APP_LAYER_MAX_PROGRESS];
 
     MpmThreadCtx mtc; /**< thread ctx for the mpm */
     /* work queue for post-rule matching affecting prefilter */
@@ -1449,6 +1455,18 @@ typedef struct DetectEngineThreadCtx_ {
     /** stat of lua memory limit errors. */
     StatsCounterId lua_memory_limit_errors;
 
+    /** stats id for luaxform (transform) errors */
+    StatsCounterId lua_transform_errors;
+
+    /** stats id for luaxform blocked function counts */
+    StatsCounterId lua_transform_blocked_function_errors;
+
+    /** stats id for luaxform instruction limit errors */
+    StatsCounterId lua_transform_instruction_limit_errors;
+
+    /** stats id for luaxform memory limit errors */
+    StatsCounterId lua_transform_memory_limit_errors;
+
 #ifdef DEBUG
     uint64_t pkt_stream_add_cnt;
     uint64_t payload_mpm_cnt;
@@ -1478,6 +1496,9 @@ typedef struct DetectEngineThreadCtx_ {
     uint64_t prefilter_bytes_called;
 #endif
 } DetectEngineThreadCtx;
+
+// forward declaration
+typedef struct SCJsonBuilder SCJsonBuilder;
 
 /** \brief element in sigmatch type table.
  */
@@ -1528,6 +1549,9 @@ typedef struct SigTableElmt_ {
 
     // Cleanup function for freeing rust allocated name or such
     void (*Cleanup)(struct SigTableElmt_ *);
+
+    // Cleanup function for freeing rust allocated name or such
+    void (*JsonAdditionalInfo)(struct SCJsonBuilder *);
 } SigTableElmt;
 
 /* event code */
@@ -1623,6 +1647,11 @@ typedef struct PrefilterEngineList_ {
     /** Free function for pectx data. If NULL the memory is not freed. */
     void (*Free)(void *pectx);
 
+    /** Run this tx engine on every tx update, regardless of tx progress.
+     *  Only used with Tx Engines. The engine keeps its real tx_min_progress,
+     *  so it still takes part in the progress bookkeeping. */
+    bool run_always;
+
     const char *name;
     /* global id for this prefilter */
     uint32_t gid;
@@ -1650,6 +1679,11 @@ typedef struct PrefilterEngine_ {
 
     bool is_last;
     bool is_last_for_progress;
+
+    /** Tx engine must run on every tx update even once the tx progressed past
+     *  its tx_min_progress. Kept separate from tx_min_progress (-1 is the
+     *  proto-agnostic packet-style sentinel). */
+    bool run_always;
 
     /** Context for matching. Might be MpmCtx for MPM engines, other ctx'
      *  for other engines. */
@@ -1717,12 +1751,12 @@ typedef struct SigGroupHead_ {
 
 } SigGroupHead;
 
-enum DetectEngineTenantSelectors
-{
-    TENANT_SELECTOR_UNKNOWN = 0,    /**< not set */
-    TENANT_SELECTOR_DIRECT,         /**< method provides direct tenant id */
-    TENANT_SELECTOR_VLAN,           /**< map vlan to tenant id */
-    TENANT_SELECTOR_LIVEDEV,        /**< map livedev to tenant id */
+enum DetectEngineTenantSelectors {
+    TENANT_SELECTOR_UNKNOWN = 0, /**< not set */
+    TENANT_SELECTOR_DIRECT,      /**< method provides direct tenant id */
+    TENANT_SELECTOR_VLAN,        /**< map vlan to tenant id */
+    TENANT_SELECTOR_LIVEDEV,     /**< map livedev to tenant id */
+    TENANT_SELECTOR_TUNNEL,      /**< map tunnel id to tenant id */
 };
 
 typedef struct DetectEngineTenantMapping_ {

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2025 Open Information Security Foundation
+/* Copyright (C) 2007-2026 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -39,7 +39,9 @@ typedef struct FtpLineState_ {
     const uint8_t *buf;
     uint32_t len;
     uint8_t delim_len;
-    bool lf_found;
+    /** the line was longer than the configured maximum and buf holds only
+     *  what fit; set by the line getter for the line it hands back */
+    bool truncated;
 } FtpLineState;
 
 typedef struct FTPResponseWrapper_ {
@@ -66,6 +68,7 @@ typedef struct FTPTransaction_  {
 
     /* for the request */
     uint32_t request_length;
+    uint32_t preliminary_response_cnt;
     uint8_t *request;
     bool request_truncated;
 
@@ -129,6 +132,6 @@ uint64_t FTPMemuseGlobalCounter(void);
 uint64_t FTPMemcapGlobalCounter(void);
 
 uint16_t JsonGetNextLineFromBuffer(const char *buffer, const uint16_t len);
-bool EveFTPDataAddMetadata(void *vtx, SCJsonBuilder *jb);
+bool EveFTPDataAddMetadata(const void *vtx, void *jb);
 
 #endif /* SURICATA_APP_LAYER_FTP_H */

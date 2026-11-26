@@ -25,7 +25,6 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
-#include "util-unittest.h"
 #include "util-buffer.h"
 #include "util-debug.h"
 
@@ -194,9 +193,13 @@ static void JsonDNP3LogResponse(SCJsonBuilder *js, DNP3Transaction *dnp3tx)
     SCJbClose(js);
 }
 
-bool AlertJsonDnp3(void *vtx, SCJsonBuilder *js)
+bool AlertJsonDnp3(const void *vtx, void *js)
 {
     DNP3Transaction *tx = (DNP3Transaction *)vtx;
+    if (tx->done && tx->buffer == NULL) {
+        /* Carrier TX for app-layer event, don't log. */
+        return false;
+    }
     bool logged = false;
     SCJbOpenObject(js, "dnp3");
     if (tx->is_request && tx->done) {
@@ -264,6 +267,10 @@ static int JsonDNP3Logger(ThreadVars *tv, void *thread_data, const Packet *p, Fl
 {
     SCEnter();
     DNP3Transaction *tx = vtx;
+    if (tx->done && tx->buffer == NULL) {
+        /* Carrier TX for app-layer event, don't log. */
+        SCReturnInt(TM_ECODE_OK);
+    }
     if (tx->is_request && tx->done) {
         JsonDNP3LoggerToServer(tv, thread_data, p, f, state, vtx, tx_id);
     } else if (!tx->is_request && tx->done) {

@@ -27,7 +27,6 @@
 #include "decode.h"
 
 #include "util-validate.h"
-#include "util-unittest.h"
 
 #define MPLS_HEADER_LEN         4
 #define MPLS_PW_LEN             4
@@ -82,10 +81,7 @@ int DecodeMPLS(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
         event = MPLS_BAD_LABEL_ROUTER_ALERT;
     }
     else if (label == MPLS_LABEL_IPV6) {
-        if (len > USHRT_MAX) {
-            return TM_ECODE_FAILED;
-        }
-        return DecodeIPV6(tv, dtv, p, pkt, (uint16_t)len);
+        return DecodeIPV6(tv, dtv, p, pkt, len);
     }
     else if (label == MPLS_LABEL_NULL) {
         /* Shouldn't appear on the wire. */
@@ -115,10 +111,7 @@ int DecodeMPLS(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
         DecodeIPV4(tv, dtv, p, pkt, (uint16_t)len);
         break;
     case MPLS_PROTO_IPV6:
-        if (len > USHRT_MAX) {
-            return TM_ECODE_FAILED;
-        }
-        DecodeIPV6(tv, dtv, p, pkt, (uint16_t)len);
+        DecodeIPV6(tv, dtv, p, pkt, len);
         break;
     case MPLS_PROTO_ETHERNET_PW:
         DecodeEthernet(tv, dtv, p, pkt + MPLS_PW_LEN, len - MPLS_PW_LEN);

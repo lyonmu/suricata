@@ -24,7 +24,6 @@
 
 #include "util-byte.h"
 #include "util-debug.h"
-#include "util-mem.h"
 #include "app-layer-parser.h"
 #include "output.h"
 
@@ -42,9 +41,9 @@ typedef struct LogLLMNRLogThread_ {
     OutputJsonThreadCtx *ctx;
 } SCLLMNRLogThread;
 
-bool AlertJsonLLMNR(void *txptr, SCJsonBuilder *js)
+bool AlertJsonLLMNR(const void *txptr, void *js)
 {
-    return SCLLMNRLogJson(txptr, js);
+    return SCLLMNRLogJson((void *)txptr, js);
 }
 
 static int JsonLLMNRLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow *f,

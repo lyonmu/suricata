@@ -743,6 +743,10 @@ pub struct SMBState {
     /// transactions list
     pub transactions: VecDeque<SMBTransaction>,
 
+    /// file txs held in the transactions list: the OOO backstop scan is a
+    /// no-op without one, so it is skipped when this is 0
+    pub(crate) file_tx_count: u32,
+
     /// tx counter for assigning incrementing id's to tx's
     tx_id: u64,
 
@@ -814,6 +818,7 @@ impl SMBState {
             check_post_gap_file_txs: false,
             post_gap_files_checked: false,
             transactions: VecDeque::new(),
+            file_tx_count: 0,
             tx_id: 0,
             dialect: 0,
             dialect_vec: None,
@@ -831,11 +836,8 @@ impl SMBState {
 
     pub fn new_tx(&mut self) -> Option<SMBTransaction> {
         if self.transactions.len() >= unsafe { SMB_MAX_TX } {
-            // Refuse to create a transaction once the list is at the limit. This
-            // bounds the number of transactions a single input can create, no
-            // matter the path (compound records, dcerpc, ...). Callers stop
-            // using the transaction and the parser puts the flow into an error
-            // state (see issue 8629).
+            // Refuse to create a tx once the list is at the limit: bounds the
+            // transactions a single input can create (any path); flow errors out.
             self.set_event(SMBEvent::TooManyTransactions);
             return None;
         }
@@ -848,24 +850,19 @@ impl SMBState {
 
     pub fn free_tx(&mut self, tx_id: u64) {
         SCLogDebug!("Freeing TX with ID {} TX.ID {}", tx_id, tx_id + 1);
-        let len = self.transactions.len();
-        let mut found = false;
-        let mut index = 0;
-        for i in 0..len {
-            let tx = &self.transactions[i];
-            if tx.id == tx_id + 1 {
-                found = true;
-                index = i;
-                SCLogDebug!(
-                    "tx {} progress {}/{}",
-                    tx.id,
-                    tx.request_done,
-                    tx.response_done
-                );
-                break;
+        if let Some(index) = self.transactions.iter().position(|tx| tx.id == tx_id + 1) {
+            SCLogDebug!(
+                "tx {} progress {}/{}",
+                self.transactions[index].id,
+                self.transactions[index].request_done,
+                self.transactions[index].response_done
+            );
+            if matches!(
+                self.transactions[index].type_data,
+                Some(SMBTransactionTypeData::FILE(_))
+            ) {
+                self.file_tx_count = self.file_tx_count.saturating_sub(1);
             }
-        }
-        if found {
             SCLogDebug!(
                 "freeing TX with ID {} TX.ID {} at index {} left: {} max id: {}",
                 tx_id,
@@ -1537,9 +1534,8 @@ impl SMBState {
     pub fn parse_tcp_data_ts(
         &mut self, flow: *mut Flow, stream_slice: &StreamSlice,
     ) -> AppLayerResult {
-        // The transaction list is full: new_tx() is refusing to create more, so
-        // put the flow into an error state and stop processing it (see issue
-        // 8629).
+        // The transaction list is full: new_tx() refuses, so error the flow and stop
+        // processing it (see issue 8629).
         if self.transactions.len() >= unsafe { SMB_MAX_TX } {
             self.set_event(SMBEvent::TooManyTransactions);
             return AppLayerResult::err();
@@ -2098,9 +2094,8 @@ impl SMBState {
     pub fn parse_tcp_data_tc(
         &mut self, flow: *mut Flow, stream_slice: &StreamSlice,
     ) -> AppLayerResult {
-        // The transaction list is full: new_tx() is refusing to create more, so
-        // put the flow into an error state and stop processing it (see issue
-        // 8629).
+        // The transaction list is full: new_tx() refuses, so error the flow and stop
+        // processing it (see issue 8629).
         if self.transactions.len() >= unsafe { SMB_MAX_TX } {
             self.set_event(SMBEvent::TooManyTransactions);
             return AppLayerResult::err();
@@ -2367,11 +2362,6 @@ impl SMBState {
             let gap = vec![0; new_gap_size as usize];
 
             let consumed2 = self.filetracker_update(Direction::ToServer, &gap, new_gap_size);
-            if consumed2 == new_gap_size {
-                /* no need to tag ssn as gap'd as we got it in our file logic. */
-                return AppLayerResult::ok();
-            }
-
             if consumed2 > new_gap_size {
                 SCLogDebug!(
                     "consumed more than GAP size: {} > {}",
@@ -2383,6 +2373,8 @@ impl SMBState {
             }
         }
 
+        // A gap reaching the file tracker grew OOO state (even if fully consumed):
+        // tag the session gapped -- the backstop is gated on this flag.
         self.ts_ssn_gap = true;
         self.ts_gap = true;
         return AppLayerResult::ok();
@@ -2403,11 +2395,6 @@ impl SMBState {
             let gap = vec![0; new_gap_size as usize];
 
             let consumed2 = self.filetracker_update(Direction::ToClient, &gap, new_gap_size);
-            if consumed2 == new_gap_size {
-                /* no need to tag ssn as gap'd as we got it in our file logic. */
-                return AppLayerResult::ok();
-            }
-
             if consumed2 > new_gap_size {
                 SCLogDebug!(
                     "consumed more than GAP size: {} > {}",
@@ -2419,6 +2406,8 @@ impl SMBState {
             }
         }
 
+        // A gap reaching the file tracker grew OOO state (even if fully consumed):
+        // tag the session gapped -- the backstop is gated on this flag.
         self.tc_ssn_gap = true;
         self.tc_gap = true;
         return AppLayerResult::ok();
@@ -2929,9 +2918,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-read-size");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_READ_SIZE = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_READ_SIZE = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-read-size");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-read-size value");
                 }
@@ -2940,9 +2934,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-write-size");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_WRITE_SIZE = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_WRITE_SIZE = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-write-size");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-write-size value");
                 }
@@ -2951,9 +2950,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-write-queue-size");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_WRITE_QUEUE_SIZE = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_WRITE_QUEUE_SIZE = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-write-queue-size");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-write-queue-size value");
                 }
@@ -2962,9 +2966,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-write-queue-cnt");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_WRITE_QUEUE_CNT = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_WRITE_QUEUE_CNT = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-write-queue-cnt");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-write-queue-cnt value");
                 }
@@ -2973,9 +2982,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-read-queue-size");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_READ_QUEUE_SIZE = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_READ_QUEUE_SIZE = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-read-queue-size");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-read-queue-size value");
                 }
@@ -2984,9 +2998,14 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         let retval = conf_get("app-layer.protocols.smb.max-read-queue-cnt");
         if let Some(val) = retval {
             match get_memval(val) {
-                Ok(retval) => {
-                    SMB_CFG_MAX_READ_QUEUE_CNT = retval as u32;
-                }
+                Ok(retval) => match u32::try_from(retval) {
+                    Ok(v) => {
+                        SMB_CFG_MAX_READ_QUEUE_CNT = v;
+                    }
+                    Err(_) => {
+                        SCLogError!("value out of range for smb.max-read-queue-cnt");
+                    }
+                },
                 Err(_) => {
                     SCLogError!("Invalid max-read-queue-cnt value");
                 }
@@ -2994,7 +3013,12 @@ pub unsafe extern "C" fn SCRegisterSmbParser() {
         }
         if let Some(val) = conf_get("app-layer.protocols.smb.max-tx") {
             if let Ok(v) = val.parse::<usize>() {
-                SMB_MAX_TX = v;
+                // 0 would evict every transaction on insert
+                if v == 0 {
+                    SCLogError!("Invalid value for smb.max-tx");
+                } else {
+                    SMB_MAX_TX = v;
+                }
             } else {
                 SCLogError!("Invalid value for smb.max-tx");
             }

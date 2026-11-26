@@ -41,6 +41,8 @@ void DetectBufferTypeSupportsMultiInstance(const char *name);
 int DetectBufferTypeMaxId(void);
 void DetectBufferTypeCloseRegistration(void);
 void DetectBufferTypeSetDescriptionByName(const char *name, const char *desc);
+void DetectBufferTypeSetRunAlways(const char *name);
+void DetectEngineBufferTypeSetRunAlways(DetectEngineCtx *de_ctx, const int id);
 void DetectBufferTypeRegisterSetupCallback(const char *name,
         void (*Callback)(const DetectEngineCtx *, Signature *, const DetectBufferType *));
 void DetectBufferTypeRegisterValidateCallback(
@@ -117,6 +119,7 @@ int DetectEngineReloadTenantBlocking(uint32_t tenant_id, const char *yaml, int r
 int DetectEngineReloadTenantsBlocking(const int reload_cnt);
 
 int DetectEngineTenantRegisterLivedev(uint32_t tenant_id, int device_id);
+int DetectEngineTenantRegisterTunnel(uint32_t tenant_id, uint16_t tunnel_id);
 int DetectEngineTenantRegisterVlanId(uint32_t tenant_id, uint16_t vlan_id);
 int DetectEngineTenantUnregisterVlanId(uint32_t tenant_id, uint16_t vlan_id);
 int DetectEngineTenantRegisterPcapFile(uint32_t tenant_id);

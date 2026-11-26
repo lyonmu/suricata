@@ -171,6 +171,15 @@ pub fn get_resp_type_for_req(t: u8) -> u8 {
     }
 }
 
+/// Check if `resp` is a valid reply to `req`, including the failure replies
+pub fn is_resp_type_for_req(req: u8, resp: u8) -> bool {
+    match resp {
+        DCERPC_TYPE_FAULT => req == DCERPC_TYPE_REQUEST || req == DCERPC_TYPE_ALTER_CONTEXT,
+        DCERPC_TYPE_BINDNAK => req == DCERPC_TYPE_BIND,
+        _ => get_resp_type_for_req(req) == resp,
+    }
+}
+
 pub fn get_req_type_for_resp(t: u8) -> u8 {
     match t {
         DCERPC_TYPE_RESPONSE => DCERPC_TYPE_REQUEST,
@@ -205,6 +214,8 @@ pub struct DCERPCTransaction {
     pub resp_lost: bool,
     pub req_cmd: u8,
     pub resp_cmd: u8,
+    pub req_seen: bool,
+    pub resp_seen: bool,
     pub activityuuid: Vec<u8>,
     pub seqnum: u32,
     pub tx_data: AppLayerTxData,
@@ -221,9 +232,9 @@ impl DCERPCTransaction {
         return Self {
             stub_data_buffer_ts: Vec::new(),
             stub_data_buffer_tc: Vec::new(),
-            req_cmd: DCERPC_TYPE_REQUEST,
-            resp_cmd: DCERPC_TYPE_RESPONSE,
             activityuuid: Vec::new(),
+            req_cmd: DCERPC_TYPE_UNKNOWN,
+            resp_cmd: DCERPC_TYPE_UNKNOWN,
             tx_data: AppLayerTxData::new(),
             ..Default::default()
         };
@@ -278,13 +289,13 @@ pub struct Uuid {
     pub node: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct DCERPCHdr {
     pub rpc_vers: u8,
     pub rpc_vers_minor: u8,
     pub hdrtype: u8,
     pub pfc_flags: u8,
-    pub packed_drep: Vec<u8>,
+    pub packed_drep: [u8; 4],
     pub frag_length: u16,
     pub auth_length: u16,
     pub call_id: u32,
@@ -380,19 +391,13 @@ impl DCERPCState {
 
     pub fn free_tx(&mut self, tx_id: u64) {
         SCLogDebug!("Freeing TX with ID {} TX.ID {}", tx_id, tx_id + 1);
-        let len = self.transactions.len();
-        let mut found = false;
-        let mut index = 0;
-        for i in 0..len {
-            let tx = &self.transactions[i];
-            if tx.id == tx_id + 1 {
-                found = true;
-                index = i;
-                SCLogDebug!("tx {} progress {}/{}", tx.id, tx.req_done, tx.resp_done);
-                break;
-            }
-        }
-        if found {
+        if let Some(index) = self.transactions.iter().position(|tx| tx.id == tx_id + 1) {
+            SCLogDebug!(
+                "tx {} progress {}/{}",
+                self.transactions[index].id,
+                self.transactions[index].req_done,
+                self.transactions[index].resp_done
+            );
             SCLogDebug!(
                 "freeing TX with ID {} TX.ID {} at index {} left: {} max id: {}",
                 tx_id,
@@ -445,8 +450,8 @@ impl DCERPCState {
                         if tx.req_done || tx.req_lost {
                             continue;
                         }
-                        let resp_cmd = get_resp_type_for_req(cmd);
-                        if resp_cmd != tx.resp_cmd {
+                        /* do not match if the transaction's command does not match expected */
+                        if tx.req_cmd != cmd && get_req_type_for_resp(tx.resp_cmd) != cmd {
                             continue;
                         }
                     }
@@ -454,8 +459,8 @@ impl DCERPCState {
                         if tx.resp_done || tx.resp_lost {
                             continue;
                         }
-                        let req_cmd = get_req_type_for_resp(cmd);
-                        if req_cmd != tx.req_cmd {
+                        /* do not match if the transaction's command does not match expected */
+                        if tx.resp_cmd != cmd && !is_resp_type_for_req(tx.req_cmd, cmd) {
                             continue;
                         }
                     }
@@ -585,6 +590,7 @@ impl DCERPCState {
                 }
                 let mut tx = self.create_tx(hdr);
                 tx.req_cmd = hdr.hdrtype;
+                tx.req_seen = true;
                 tx.req_done = true;
                 if let Some(flow) = self.flow {
                     sc_app_layer_parser_trigger_raw_stream_inspection(
@@ -668,7 +674,7 @@ impl DCERPCState {
                     &mut tx.stub_data_buffer_reset_ts,
                 );
                 tx.req_done = tx.stub_data_buffer_reset_ts;
-                tx.frag_cnt_ts += 1;
+                tx.frag_cnt_ts = tx.frag_cnt_ts.saturating_add(1);
                 if let Some(flow) = self.flow {
                     sc_app_layer_parser_trigger_raw_stream_inspection(
                         flow,
@@ -686,7 +692,7 @@ impl DCERPCState {
                     &mut tx.stub_data_buffer_reset_tc,
                 );
                 tx.resp_done = tx.stub_data_buffer_reset_tc;
-                tx.frag_cnt_tc += 1;
+                tx.frag_cnt_tc = tx.frag_cnt_tc.saturating_add(1);
                 if let Some(flow) = self.flow {
                     sc_app_layer_parser_trigger_raw_stream_inspection(
                         flow,
@@ -762,6 +768,7 @@ impl DCERPCState {
                 match transaction {
                     Some(ref mut tx) => {
                         tx.req_cmd = hdr_type;
+                        tx.req_seen = true;
                         tx.ctxid = request.ctxid;
                         tx.opnum = request.opnum;
                         tx.first_request_seen = request.first_request_seen;
@@ -769,6 +776,7 @@ impl DCERPCState {
                     None => {
                         let mut tx = self.create_tx(hdr);
                         tx.req_cmd = hdr_type;
+                        tx.req_seen = true;
                         tx.ctxid = request.ctxid;
                         tx.opnum = request.opnum;
                         tx.first_request_seen = request.first_request_seen;
@@ -794,6 +802,24 @@ impl DCERPCState {
                 -1
             }
         }
+    }
+
+    fn save_unhandled_ptypes(&mut self, hdr: &DCERPCHdr, direction: Direction) {
+        /* Create tx even on unhandled PDU types to be able to
+         * at least issue a match on header only fields */
+        let mut tx = self.create_tx(hdr);
+        if direction == Direction::ToServer {
+            tx.req_cmd = hdr.hdrtype;
+            tx.req_seen = true;
+        } else {
+            tx.resp_cmd = hdr.hdrtype;
+            tx.resp_seen = true;
+        }
+        tx.req_done = true;
+        tx.resp_done = true;
+        self.transactions.push_back(tx);
+        // recognized DCERPC PDU types that we do not process
+        SCLogDebug!("Unhandled packet type: {:?}", hdr.hdrtype);
     }
 
     pub fn handle_input_data(
@@ -888,6 +914,15 @@ impl DCERPCState {
                     // input only consists of the header and that was consumed, so, return early
                     cur_i = &cur_i[fraglen as usize..];
                     consumed += fraglen as u32;
+                    // save header-only PDU types too
+                    if matches!(
+                        hdr.hdrtype,
+                        DCERPC_TYPE_SHUTDOWN | DCERPC_TYPE_CO_CANCEL | DCERPC_TYPE_ORPHANED
+                    ) {
+                        self.save_unhandled_ptypes(&hdr, direction);
+                        /* DCERPC_TYPE_CO_CANCEL and ORPHANED can optionally be more than header
+                         * too so they're also handled later on the in the unrecognized branch */
+                    }
                     continue;
                 }
                 cmp::Ordering::Greater => {}
@@ -949,10 +984,12 @@ impl DCERPCState {
                         self.get_tx_by_call_id(current_call_id, Direction::ToClient, hdrtype)
                     {
                         tx.resp_cmd = hdrtype;
+                        tx.resp_seen = true;
                         tx
                     } else {
                         let mut tx = self.create_tx(&hdr);
                         tx.resp_cmd = hdrtype;
+                        tx.resp_seen = true;
                         self.transactions.push_back(tx);
                         self.transactions.back_mut().unwrap()
                     };
@@ -980,10 +1017,12 @@ impl DCERPCState {
                     match transaction {
                         Some(tx) => {
                             tx.resp_cmd = hdrtype;
+                            tx.resp_seen = true;
                         }
                         None => {
                             let mut tx = self.create_tx(&hdr);
                             tx.resp_cmd = hdrtype;
+                            tx.resp_seen = true;
                             self.transactions.push_back(tx);
                         }
                     };
@@ -997,9 +1036,45 @@ impl DCERPCState {
                         return AppLayerResult::err();
                     }
                 }
+                DCERPC_TYPE_FAULT | DCERPC_TYPE_BINDNAK => {
+                    let tx = if let Some(tx) =
+                        self.get_tx_by_call_id(current_call_id, Direction::ToClient, hdrtype)
+                    {
+                        tx
+                    } else {
+                        let mut tx = self.create_tx(&hdr);
+                        /* a request matching a failure reply can't be paired later
+                         * so close the request side too */
+                        tx.req_done = true;
+                        self.transactions.push_back(tx);
+                        self.transactions.back_mut().unwrap()
+                    };
+                    tx.resp_cmd = hdrtype;
+                    tx.resp_seen = true;
+                    tx.resp_done = true;
+                    if let Some(flow) = self.flow {
+                        sc_app_layer_parser_trigger_raw_stream_inspection(
+                            flow,
+                            Direction::ToClient as i32,
+                        );
+                    }
+                }
+                DCERPC_TYPE_PING
+                | DCERPC_TYPE_WORKING
+                | DCERPC_TYPE_NOCALL
+                | DCERPC_TYPE_REJECT
+                | DCERPC_TYPE_ACK
+                | DCERPC_TYPE_CL_CANCEL
+                | DCERPC_TYPE_FACK
+                | DCERPC_TYPE_CANCEL_ACK
+                | DCERPC_TYPE_AUTH3
+                | DCERPC_TYPE_CO_CANCEL
+                | DCERPC_TYPE_ORPHANED
+                | DCERPC_TYPE_RTS => {
+                    self.save_unhandled_ptypes(&hdr, direction);
+                }
                 _ => {
                     SCLogDebug!("Unrecognized packet type: {:?}", hdrtype);
-                    // skip unrecognized packet types such as AUTH3
                 }
             }
             consumed += fraglen as u32;
@@ -1021,7 +1096,7 @@ fn evaluate_stub_params(
     if stub_len == 0 {
         return 0;
     }
-    if stub_len == lenleft && (fragtype == 0 || (fragtype & PFC_LAST_FRAG > 0)) {
+    if stub_len == lenleft && (fragtype & PFC_LAST_FRAG > 0) {
         *stub_data_buffer_reset = true;
     }
 
@@ -1649,7 +1724,7 @@ mod tests {
     #[test]
     pub fn test_parse_dcerpc() {
         let request: &[u8] = &[
-            0x05, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x00, 0x00, 0x03, 0x10, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0xe8, 0x03, 0x00, 0x00, 0x0b, 0x00, 0x09, 0x00, 0x45, 0x00, 0x2c, 0x00,
             0x4d, 0x00, 0x73, 0x00, 0x53, 0x00, 0x59, 0x00, 0x2a, 0x00, 0x4a, 0x00, 0x7a, 0x00,
             0x3e, 0x00, 0x58, 0x00, 0x21, 0x00, 0x4a, 0x00, 0x30, 0x00, 0x41, 0x00, 0x4b, 0x00,

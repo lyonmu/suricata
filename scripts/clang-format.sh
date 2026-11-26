@@ -340,8 +340,11 @@ function HelpCommand {
 # Do not compare with main directly as it will diff with the latest commit
 # on main. If our branch has not been rebased on the latest main, this
 # would result in including all new commits on main!
+# Returns non-zero when baseline doesn't exist
 function FirstCommitOfBranch {
-    start="${SURICATA_BRANCH:-origin/main}"
+    # don't leak a local variable
+    local start="${SURICATA_BRANCH:-origin/main}"
+    git rev-parse --verify --quiet "$start^{commit}" >/dev/null || return 1
     local first_commit=$(git rev-list $start..HEAD | tail -n 1)
     echo $first_commit
 }
@@ -397,13 +400,31 @@ function CheckBranch {
 
     # Find first commit on branch. Use $first_commit^ if you need the
     # commit on main we branched off.
-    local first_commit=$(FirstCommitOfBranch)
+    local first_commit
+    first_commit=$(FirstCommitOfBranch) ||
+        Die "Baseline branch '${SURICATA_BRANCH:-origin/main}' does not exist"
+    # No commits of our own, e.g. when the branch is the baseline itself.
+    if [ -z "$first_commit" ]; then
+        if [ $quiet -ne 1 ]; then
+            echo "no commits on branch"
+        fi
+        return $EXIT_CODE_OK
+    fi
 
     # git-clang-format is a python script that does not like SIGPIPE shut down
     # by "| head" prematurely. Use work-around with writing to tmpfile first.
     local format_changes="$git_clang_format --extensions c,h $first_commit^"
     local tmpfile=$(mktemp /tmp/clang-format.check.XXXXXX)
-    $format_changes > $tmpfile
+    local errfile=$(mktemp /tmp/clang-format.err.XXXXXX)
+    $format_changes > $tmpfile 2> $errfile
+    local format_rc=$?
+    cat $errfile 1>&2
+    rm $errfile
+    # Exit code 1 means formatting changes were found, 2 and up are errors.
+    if [ $format_rc -gt 1 ]; then
+        rm $tmpfile
+        Die "git clang-format failed"
+    fi
     local changes=$(cat $tmpfile | head -1)
     if [ $show_diff -eq 1 -o $show_diffstat -eq 1 ]; then
         cat $tmpfile
@@ -465,11 +486,18 @@ function ReformatBranch {
 
     # Find first commit on branch. Use $first_commit^ if you need the
     # commit on main we branched off.
-    local first_commit=$(FirstCommitOfBranch)
+    local first_commit
+    first_commit=$(FirstCommitOfBranch) ||
+        Die "Baseline branch '${SURICATA_BRANCH:-origin/main}' does not exist"
+    if [ -z "$first_commit" ]; then
+        echo "no commits on branch"
+        ExitWith $EXIT_CODE_OK
+    fi
     echo "First commit on branch: $first_commit"
 
     $GIT_CLANG_FORMAT --style file --extensions c,h $with_unstaged $first_commit^
-    if [ $? -ne 0 ]; then
+    # Exit code 1 means formatting changes were made, 2 and up are errors.
+    if [ $? -gt 1 ]; then
         Die "Cannot reformat branch. git clang-format failed"
     fi
 }
@@ -485,7 +513,8 @@ function ReformatCommit {
     fi
 
     $GIT_CLANG_FORMAT --style file --extensions c,h $commit
-    if [ $? -ne 0 ]; then
+    # Exit code 1 means formatting changes were made, 2 and up are errors.
+    if [ $? -gt 1 ]; then
         Die "Cannot reformat most recent commit. git clang-format failed"
     fi
 }
@@ -509,7 +538,8 @@ function ReformatCached {
     fi
 
     $GIT_CLANG_FORMAT --style file --extensions c,h $with_unstaged
-    if [ $? -ne 0 ]; then
+    # Exit code 1 means formatting changes were made, 2 and up are errors.
+    if [ $? -gt 1 ]; then
         Die "Cannot reformat staging. git clang-format failed"
     fi
 }
@@ -541,10 +571,14 @@ function ReformatCommitsOnBranch {
 
         # Find first commit on branch. Use $first_commit^ if you need the
         # commit on main we branched off.
+        # CheckBranch above already bailed out on a missing baseline.
         local first_commit=$(FirstCommitOfBranch)
         echo "First commit on branch: $first_commit"
         # Use --force in case it's run a second time on the same branch
-        git filter-branch --force --tree-filter "$GIT_CLANG_FORMAT --extensions c,h $first_commit^" -- $first_commit..HEAD
+        # Tolerate exit code 1, it means the tree filter reformatted files.
+        git filter-branch --force --tree-filter \
+            "$GIT_CLANG_FORMAT --extensions c,h $first_commit^ || [ \$? -le 1 ]" \
+            -- $first_commit^..HEAD
         if [ $? -ne 0 ]; then
             Die "Cannot rewrite branch. git filter-branch failed"
         fi

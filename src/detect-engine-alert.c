@@ -181,9 +181,7 @@ static inline void RuleActionToFlow(const uint8_t action, Flow *f, const bool fw
          * firewall rules. */
         if (f->flags & FLOW_ACTION_ACCEPT) {
             f->flags &= ~(FLOW_ACTION_ACCEPT | FLOW_ACTION_BY_FIREWALL);
-            f->flags |= FLOW_ACTION_DROP;
-            if (fw_rule)
-                f->flags |= FLOW_ACTION_BY_FIREWALL;
+            FlowSetDropAction(f, fw_rule ? FLOW_ACTION_BY_FIREWALL : 0);
             SCLogDebug("replaced FLOW_ACTION_ACCEPT with FLOW_ACTION_DROP");
         }
         if (f->flags & (FLOW_ACTION_DROP | FLOW_ACTION_PASS)) {
@@ -192,7 +190,7 @@ static inline void RuleActionToFlow(const uint8_t action, Flow *f, const bool fw
                     (action & ACTION_PASS) ? "pass" : "drop",
                     (f->flags & FLOW_ACTION_DROP) ? "drop" : "pass");
         } else {
-            f->flags |= FLOW_ACTION_DROP;
+            FlowSetDropAction(f, 0);
             SCLogDebug("setting flow action drop");
         }
     }
@@ -373,6 +371,34 @@ static inline int PacketAlertSetContext(
 }
 
 /** \internal
+ * \brief Free the alert context a PacketAlert owns and clear the reference.
+ */
+static void PacketAlertContextRelease(PacketAlert *pa)
+{
+    struct PacketContextData *json = pa->json_info;
+    while (json != NULL) {
+        struct PacketContextData *next = json->next;
+        SCFree(json->json_string);
+        SCFree(json);
+        json = next;
+    }
+    pa->json_info = NULL;
+}
+
+/** \internal
+ * \brief Release the alert context of queue entries for alerts that never reached the packet.
+ */
+static void AlertQueueReleaseContext(DetectEngineThreadCtx *det_ctx)
+{
+    for (uint16_t i = 0; i < det_ctx->alert_queue_size; i++) {
+        PacketAlert *pa = &det_ctx->alert_queue[i];
+        if (pa->json_info != NULL) {
+            PacketAlertContextRelease(pa);
+        }
+    }
+}
+
+/** \internal
  */
 static inline PacketAlert PacketAlertSet(DetectEngineThreadCtx *det_ctx, const Signature *s,
         uint64_t tx_id, const uint8_t sub_state, uint8_t alert_flags)
@@ -399,6 +425,9 @@ static void AlertQueueAppend(DetectEngineThreadCtx *det_ctx, const Signature *s,
     /* first time we see a drop action signature, set that in the packet */
     /* we do that even before inserting into the queue, so we save it even if appending fails */
     if (p->alerts.drop.action == 0 && s->action & ACTION_DROP) {
+        /* an empty drop slot owns no context: both reset sites release the chain
+         * before clearing `action`, so overwriting the whole slot here is safe. */
+        DEBUG_VALIDATE_BUG_ON(p->alerts.drop.json_info != NULL);
         p->alerts.drop = PacketAlertSet(det_ctx, s, tx_id, sub_state, alert_flags);
         SCLogDebug("sid %u: set PacketAlert drop action. s->iid %" PRIu32 "", s->id, s->iid);
     }
@@ -575,7 +604,7 @@ static struct DetectFirewallPolicy HandleFirewallRule(
                 }
                 PacketDrop(p, pol.action, drop_reason);
                 if (p->flow && pol.action_scope == ACTION_SCOPE_FLOW) {
-                    p->flow->flags |= FLOW_ACTION_DROP | FLOW_ACTION_BY_FIREWALL;
+                    FlowSetDropAction(p->flow, FLOW_ACTION_BY_FIREWALL);
                     SCLogDebug("packet %" PRIu64 ": FLOW_ACTION_DROP set by firewall by sid %u",
                             PcapPacketCntGet(p), s->id);
                 }
@@ -592,6 +621,7 @@ static struct DetectFirewallPolicy HandleFirewallRule(
         if (s->action & ACTION_ALERT) {
             if (p->alerts.cnt < packet_alert_max) {
                 p->alerts.alerts[p->alerts.cnt++] = *pa;
+                pa->json_info = NULL; // ownership moved to the packet
             } else {
                 p->alerts.firewall_discarded++;
             }
@@ -763,6 +793,7 @@ static inline void PacketAlertFinalizeProcessQueue(
             p->alerts.suppressed++;
         } else if (p->alerts.cnt < packet_alert_max) {
             p->alerts.alerts[p->alerts.cnt++] = *pa;
+            pa->json_info = NULL; // ownership moved to the packet
             SCLogDebug("appending sid %" PRIu32 " alert to Packet::alerts at pos %u; action:%02x",
                     s->id, i, pa->action);
 
@@ -788,6 +819,10 @@ static inline void PacketAlertFinalizeProcessQueue(
     }
 
 fw_dropped:
+    /* release the context of the alerts we did not hand over to the packet:
+     * suppressed, discarded, skipped or simply never reached. */
+    AlertQueueReleaseContext(det_ctx);
+
     /* after threat detection has been handled, see if the fw intended to accept (drop is handled
      * immediately by the fw), as fw accept can be overruled by td drop. */
     if (have_fw_rules) {

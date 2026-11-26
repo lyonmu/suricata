@@ -207,7 +207,7 @@
     AC_FUNC_MMAP
     AC_FUNC_STRTOD
 
-    AC_CHECK_FUNCS([memmem memset memchr memrchr memmove])
+    AC_CHECK_FUNCS([memmem memset memchr memmove memmove_s])
     AC_CHECK_FUNCS([strcasecmp strchr strrchr strdup strndup strncasecmp strtol strstr strpbrk strtoull strtoumax])
     AC_CHECK_FUNCS([strerror])
     AC_CHECK_FUNCS([gethostname inet_ntoa uname])
@@ -287,7 +287,7 @@
             CFLAGS="${CFLAGS} -DOS_WIN32"
             WINDOWS_PATH="yes"
             AC_DEFINE([HAVE_NON_POSIX_MKDIR], [1], [mkdir is not POSIX compliant: single arg])
-            RUST_LDADD=" -lws2_32 -liphlpapi -lwbemuuid -lOle32 -lOleAut32 -lUuid -luserenv -lshell32 -ladvapi32 -lgcc_eh -lbcrypt -lntdll"
+            RUST_LDADD=" -lws2_32 -liphlpapi -lwbemuuid -lOle32 -lOleAut32 -lUuid -luserenv -lshell32 -ladvapi32 -lgcc_eh -lbcrypt -lntdll -lsynchronization"
             TRY_WPCAP="yes"
             ;;
         *-*-cygwin)
@@ -2653,13 +2653,14 @@ AC_SUBST(RUST_SURICATA_LIBNAME)
 
 AM_CONDITIONAL([BUILD_SHARED_LIBRARY], [test "x$enable_shared" = "xyes"] && [test "x$can_build_shared_library" = "xyes"])
 
-AC_CONFIG_FILES(Makefile src/Makefile rust/Makefile rust/Cargo.lock rust/Cargo.toml rust/derive/Cargo.toml rust/.cargo/config.toml)
+AC_CONFIG_FILES(Makefile src/Makefile rust/Makefile rust/Cargo.lock rust/Cargo.toml rust/.cargo/config.toml)
+AC_CONFIG_FILES(rust/derive/Makefile rust/derive/Cargo.toml)
 AC_CONFIG_FILES(rust/sys/Makefile rust/sys/Cargo.toml)
 AC_CONFIG_FILES(rust/ffi/Makefile rust/ffi/Cargo.toml)
 AC_CONFIG_FILES(rust/suricatactl/Makefile rust/suricatactl/Cargo.toml)
 AC_CONFIG_FILES(rust/suricatasc/Makefile rust/suricatasc/Cargo.toml)
 AC_CONFIG_FILES(rust/htp/Makefile rust/htp/Cargo.toml)
-AC_CONFIG_FILES(qa/Makefile qa/coccinelle/Makefile)
+AC_CONFIG_FILES(qa/Makefile qa/coccinelle/Makefile qa/ci/Makefile)
 AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile)
 AC_CONFIG_FILES(suricata.yaml etc/Makefile etc/suricata.logrotate etc/suricata.service)
 AC_CONFIG_FILES(python/Makefile python/suricata/config/defaults.py)

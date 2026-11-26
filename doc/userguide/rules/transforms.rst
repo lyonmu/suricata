@@ -347,6 +347,8 @@ A Lua transform function is not invoked if the buffer is empty or the Lua framew
 not accessible (rare).
 
 Lua transform functions must return two values (see below) or the buffer is not modified.
+An empty return (``""`` with a length of 0) is accepted and also leaves the
+buffer unchanged; ``luaxform`` cannot shorten a buffer to zero.
 
 Note that the arguments and values are passed without validation
 nor interpretation. There is a maximum of 10 arguments.
@@ -418,12 +420,12 @@ the buffer.
            end
        end
        local str_len = #input
-       if offset < 0 or offset > str_len then
+       if offset < 0 or str_len < offset then
            print("offset is out of bounds: " .. offset)
            return nil
        end
        str_len = str_len - offset
-       if bytes < 0 or bytes > str_len then
+       if bytes < 0 or str_len < bytes then
            print("invalid bytes " ..  bytes .. " or bytes > length " .. bytes .. " length " .. str_len)
            return nil
        end

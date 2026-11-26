@@ -54,7 +54,6 @@
 #include "app-layer.h"
 #include "app-layer-ssl.h"
 
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #ifndef HAVE_JA3
@@ -93,10 +92,10 @@ void DetectTlsJa3StringRegister(void)
 
 #ifdef HAVE_JA3
     DetectAppLayerInspectEngineRegister("ja3.string", ALPROTO_TLS, SIG_FLAG_TOSERVER,
-            TLS_STATE_CLIENT_HELLO_DONE, DetectEngineInspectBufferGeneric, GetData);
+            TLS_STATE_CLIENT_HELLO, DetectEngineInspectBufferGeneric, GetData);
 
     DetectAppLayerMpmRegister("ja3.string", SIG_FLAG_TOSERVER, 2, PrefilterGenericMpmRegister,
-            GetData, ALPROTO_TLS, TLS_STATE_CLIENT_HELLO_DONE);
+            GetData, ALPROTO_TLS, TLS_STATE_CLIENT_HELLO);
 
     DetectAppLayerMpmRegister("ja3.string", SIG_FLAG_TOSERVER, 2, PrefilterGenericMpmRegister,
             Ja3DetectGetString, ALPROTO_QUIC, 1);

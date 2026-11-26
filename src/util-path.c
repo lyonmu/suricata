@@ -28,6 +28,7 @@
 #include "util-path.h"
 
 #ifdef OS_WIN32
+#include "win32-misc.h"
 #define DIRECTORY_SEPARATOR '\\'
 #else
 #define DIRECTORY_SEPARATOR '/'
@@ -268,11 +269,37 @@ const char *SCBasename(const char *path)
 bool SCPathContainsTraversal(const char *path)
 {
 #ifdef OS_WIN32
-    const char *pattern = "..\\";
+    /* Win32 treats '/' and '\\' as equivalent directory separators */
+    return strstr(path, "../") != NULL || strstr(path, "..\\") != NULL;
 #else
-    const char *pattern = "../";
+    return strstr(path, "../") != NULL;
 #endif
-    return strstr(path, pattern) != NULL;
+}
+
+/**
+ * \brief Open a text log file for append or truncate.
+ *
+ * On Windows, allows the file to be renamed or deleted while open so that
+ * external tools can rotate it. Only modes "a" and "w" are supported on
+ * all platforms; other modes fail with errno set to EINVAL.
+ *
+ * \param path The file path to open
+ * \param mode "a" to append or "w" to truncate
+ * \retval FILE* on success
+ * \retval NULL on error with errno set
+ */
+FILE *SCFopenLogFile(const char *path, const char *mode)
+{
+    if (strcmp(mode, "a") != 0 && strcmp(mode, "w") != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+#ifdef OS_WIN32
+    return SCWin32Fopen(path, mode);
+#else
+    return fopen(path, mode);
+#endif
 }
 
 /**

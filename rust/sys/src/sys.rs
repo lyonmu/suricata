@@ -21,9 +21,11 @@ pub const SIGMATCH_INFO_UINT32: u32 = 65536;
 pub const SIGMATCH_INFO_UINT64: u32 = 131072;
 pub const SIGMATCH_INFO_MULTI_UINT: u32 = 262144;
 pub const SIGMATCH_INFO_ENUM_UINT: u32 = 524288;
+pub const SIGMATCH_STATEFUL: u32 = 8388608;
 pub const SIGMATCH_INFO_BITFLAGS_UINT: u32 = 1048576;
 pub const SIGMATCH_BAN_FIREWALL_RULE: u32 = 2097152;
 pub const SIGMATCH_BAN_FIREWALL_MODE: u32 = 4194304;
+pub const SIGMATCH_BAN_TD_FIREWALL_MODE: u32 = 16777216;
 pub type __intmax_t = ::std::os::raw::c_long;
 pub type intmax_t = __intmax_t;
 #[repr(u32)]
@@ -633,6 +635,23 @@ extern "C" {
         tv: *mut ThreadVars, p: *const Packet, f: *mut Flow, jb: *mut SCJsonBuilder,
     );
 }
+impl DetectSigmatchListEnum {
+    pub const DETECT_SM_LIST_DYNAMIC_START: DetectSigmatchListEnum =
+        DetectSigmatchListEnum::DETECT_SM_LIST_MAX;
+}
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum DetectSigmatchListEnum {
+    DETECT_SM_LIST_MATCH = 0,
+    DETECT_SM_LIST_PMATCH = 1,
+    DETECT_SM_LIST_BASE64_DATA = 2,
+    DETECT_SM_LIST_POSTMATCH = 3,
+    #[doc = "< post-detection tagging"]
+    DETECT_SM_LIST_TMATCH = 4,
+    DETECT_SM_LIST_SUPPRESS = 5,
+    DETECT_SM_LIST_THRESHOLD = 6,
+    DETECT_SM_LIST_MAX = 7,
+}
 extern "C" {
     pub fn SCSigTablePreRegister(
         KeywordsRegister: ::std::option::Option<unsafe extern "C" fn()>,
@@ -885,7 +904,25 @@ extern "C" {
     pub fn SCDetectHelperKeywordRegister(kw: *const SCSigTableAppLiteElmt) -> u16;
 }
 extern "C" {
+    pub fn SCDetectHelperKeywordPacketMatchRegister(
+        kwid: u16,
+        Match: ::std::option::Option<
+            unsafe extern "C" fn(
+                arg1: *mut DetectEngineThreadCtx,
+                arg2: *mut Packet,
+                arg3: *const Signature,
+                arg4: *const SigMatchCtx,
+            ) -> ::std::os::raw::c_int,
+        >,
+    );
+}
+extern "C" {
     pub fn SCDetectHelperKeywordAliasRegister(kwid: u16, alias: *const ::std::os::raw::c_char);
+}
+extern "C" {
+    pub fn SCDetectHelperKeywordJsonInfoRegister(
+        kwid: u16, cb: ::std::option::Option<unsafe extern "C" fn(arg1: *mut SCJsonBuilder)>,
+    );
 }
 extern "C" {
     pub fn SCDetectHelperBufferProgressRegister(
@@ -1021,9 +1058,23 @@ extern "C" {
     pub fn SCDetectGetLastSMFromLists(s: *const Signature, ...) -> *mut SigMatch;
 }
 extern "C" {
+    pub fn SCDetectSignatureGetLastSMByType(
+        s: *const Signature, list_id: ::std::os::raw::c_int, type_: u16,
+    ) -> *const SigMatch;
+}
+extern "C" {
+    pub fn SCSigMatchGetPrevByType(sm: *const SigMatch, type_: u16) -> *const SigMatch;
+}
+extern "C" {
+    pub fn SCSigMatchGetCtx(sm: *const SigMatch) -> *const SigMatchCtx;
+}
+extern "C" {
     pub fn SCDetectSignatureSetAppProto(
         s: *mut Signature, alproto: AppProto,
     ) -> ::std::os::raw::c_int;
+}
+extern "C" {
+    pub fn SCDetectSetupSignatureIsNegated(s: *const Signature) -> bool;
 }
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -1271,6 +1322,23 @@ extern "C" {
 }
 extern "C" {
     pub fn SCBasicSearchNocaseIndex(arg1: *const u8, arg2: u32, arg3: *const u8, arg4: u16) -> u32;
+}
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum SCPacketTunnelProto {
+    DECODE_TUNNEL_ETHERNET = 0,
+    DECODE_TUNNEL_ERSPANII = 1,
+    DECODE_TUNNEL_ERSPANI = 2,
+    DECODE_TUNNEL_VXLAN = 3,
+    DECODE_TUNNEL_VLAN = 4,
+    DECODE_TUNNEL_IPV4 = 5,
+    DECODE_TUNNEL_IPV6 = 6,
+    #[doc = "< separate protocol for stricter error handling"]
+    DECODE_TUNNEL_IPV6_TEREDO = 7,
+    DECODE_TUNNEL_PPP = 8,
+    DECODE_TUNNEL_NSH = 9,
+    DECODE_TUNNEL_ARP = 10,
+    DECODE_TUNNEL_UNSET = 11,
 }
 pub type ProbingParserFPtr = ::std::option::Option<
     unsafe extern "C" fn(
@@ -1950,6 +2018,35 @@ extern "C" {
         name: *const ::std::os::raw::c_char,
         Free: ::std::option::Option<unsafe extern "C" fn(arg1: *mut ::std::os::raw::c_void)>,
     ) -> SCFlowStorageId;
+}
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum PacketL3Types {
+    PACKET_L3_UNKNOWN = 0,
+    PACKET_L3_IPV4 = 1,
+    PACKET_L3_IPV6 = 2,
+    PACKET_L3_ARP = 3,
+}
+extern "C" {
+    pub fn SCPacketGetIPProto(p: *const Packet) -> u8;
+}
+extern "C" {
+    pub fn SCPacketIsToServer(p: *const Packet) -> bool;
+}
+extern "C" {
+    pub fn SCPacketIsToClient(p: *const Packet) -> bool;
+}
+extern "C" {
+    pub fn SCPacketGetL3Type(p: *const Packet) -> PacketL3Types;
+}
+extern "C" {
+    pub fn SCPacketGetL3(p: *const Packet, len: *mut u32) -> *const u8;
+}
+extern "C" {
+    pub fn SCPacketGetFlow(p: *const Packet) -> *mut Flow;
+}
+extern "C" {
+    pub fn SCPacketGetTimeAsParts(p: *const Packet, secs: *mut u64, usecs: *mut u64);
 }
 #[doc = " \\brief Function type for thread intialization callbacks.\n\n Once registered by SCThreadRegisterInitCallback, this function will\n be called for every thread being initialized during Suricata\n startup.\n\n \\param tv The ThreadVars struct that has just been initialized.\n \\param user The user data provided when registering the callback."]
 pub type SCThreadInitCallbackFn = ::std::option::Option<

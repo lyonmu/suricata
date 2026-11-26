@@ -35,7 +35,6 @@
 #include "util-debug.h"
 
 #include "util-misc.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #include "detect-parse.h"
@@ -58,7 +57,6 @@
 #include "util-privs.h"
 #include "util-print.h"
 #include "util-proto-name.h"
-#include "util-optimize.h"
 #include "util-buffer.h"
 
 #define MODULE_NAME "JsonMetadataLog"

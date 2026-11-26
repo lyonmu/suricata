@@ -29,11 +29,9 @@
 #include "conf.h"
 
 #include "util-debug.h"
-#include "util-time.h"
 #include "util-var-name.h"
 #include "util-macset.h"
 
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #include "detect-engine.h"
@@ -53,7 +51,6 @@
 #include "util-byte.h"
 #include "util-print.h"
 #include "util-proto-name.h"
-#include "util-optimize.h"
 #include "util-buffer.h"
 #include "util-logopenfile.h"
 #include "util-log-redis.h"
@@ -901,7 +898,9 @@ SCJsonBuilder *CreateEveHeader(const Packet *p, enum SCOutputJsonLogDirection di
     } else if (PacketIsIPv6(p)) {
         SCJbSetUint(js, "ip_v", 6);
     }
-
+    if (p->tunnel_id > 0 && p->tunnel_id != PKT_TUNNEL_UNKNOWN) {
+        SCJbSetUint(js, "tunnel_id", p->tunnel_id);
+    }
     /* icmp */
     switch (p->proto) {
         case IPPROTO_ICMP:

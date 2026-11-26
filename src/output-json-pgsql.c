@@ -32,7 +32,6 @@
 #include "threadvars.h"
 #include "tm-threads.h"
 
-#include "util-unittest.h"
 #include "util-buffer.h"
 #include "util-debug.h"
 #include "util-byte.h"
@@ -59,9 +58,9 @@ typedef struct LogPgsqlLogThread_ {
     OutputJsonThreadCtx *ctx;
 } LogPgsqlLogThread;
 
-bool JsonPgsqlAddMetadata(void *vtx, SCJsonBuilder *jb)
+bool JsonPgsqlAddMetadata(const void *vtx, void *jb)
 {
-    return SCPgsqlLogger(vtx, PGSQL_DEFAULTS, jb);
+    return SCPgsqlLogger((void *)vtx, PGSQL_DEFAULTS, jb);
 }
 
 static int JsonPgsqlLogger(ThreadVars *tv, void *thread_data, const Packet *p, Flow *f, void *state,

@@ -32,7 +32,6 @@
 #include "tm-threads.h"
 
 #include "util-print.h"
-#include "util-unittest.h"
 
 #include "util-debug.h"
 
@@ -42,7 +41,6 @@
 #include "util-buffer.h"
 
 #include "util-logopenfile.h"
-#include "util-time.h"
 
 #define DEFAULT_LOG_FILENAME "stats.log"
 #define MODULE_NAME "LogStatsLog"

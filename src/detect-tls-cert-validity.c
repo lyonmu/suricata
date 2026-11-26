@@ -44,8 +44,6 @@
 #include "app-layer.h"
 #include "app-layer-ssl.h"
 
-#include "util-time.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 /**
@@ -124,7 +122,7 @@ void DetectTlsValidityRegister (void)
 
     DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
-    g_tls_validity_buffer_id = DetectBufferTypeGetByName("tls:server_cert_done:generic");
+    g_tls_validity_buffer_id = DetectBufferTypeGetByName("tls:server_cert:generic");
 }
 
 /**

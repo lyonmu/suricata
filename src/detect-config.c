@@ -40,7 +40,6 @@
 
 #include "util-debug.h"
 #include "util-spm-bm.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #include "app-layer.h"
@@ -83,7 +82,7 @@ void DetectConfigRegister(void)
 #ifdef UNITTESTS
     sigmatch_table[DETECT_CONFIG].RegisterTests = DetectConfigRegisterTests;
 #endif
-    sigmatch_table[DETECT_CONFIG].flags = SIGMATCH_SUPPORT_FIREWALL;
+    sigmatch_table[DETECT_CONFIG].flags = SIGMATCH_SUPPORT_FIREWALL | SIGMATCH_BAN_TD_FIREWALL_MODE;
     DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 

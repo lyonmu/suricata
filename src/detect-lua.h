@@ -45,6 +45,8 @@ typedef struct DetectLuaData {
     int thread_ctx_id;
     int negated;
     char *filename;
+    const Signature *signature; /* the exact sig pointer passed to init();
+                                 * bytevar.map() must match it */
     uint32_t flags;
     char *buffername; /* buffer name in case of a single buffer */
     uint32_t flowint[DETECT_LUA_MAX_FLOWINTS];
@@ -55,6 +57,9 @@ typedef struct DetectLuaData {
     DetectLuaDataBytevarEntry bytevar[DETECT_LUA_MAX_BYTEVARS];
     uint64_t alloc_limit;
     uint64_t instruction_limit;
+    bool register_in_init; /* set around the init() call: register()
+                            * mutates the shared ld, so it is only
+                            * allowed there */
 } DetectLuaData;
 
 /* prototypes */

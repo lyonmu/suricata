@@ -1566,6 +1566,22 @@ control messages only, not FTP data (file transfers).
       # Maximum line length for control messages before they will be truncated.
       #max-line-length: 4kb
 
+      # Maximum number of preliminary (1xx) responses kept per transaction.
+      #max-preliminary-responses: 16
+
+``memcap`` limits the memory that FTP counts for control-channel transactions,
+requests and replies, and for FTP-DATA file buffering. It defaults to 64 MiB
+and is shared by all FTP flows. Once it is reached, new FTP allocations fail:
+affected flows stop being parsed and file extraction can be truncated. A value
+of ``0`` removes the limit.
+
+A transaction keeps at most ``max-preliminary-responses`` preliminary
+(``1xx``) responses, 16 by default. Further preliminary responses for the same
+command are not stored or logged, and the
+``ftp.too_many_preliminary_responses`` event is raised on the transaction.
+``max-preliminary-responses`` must be greater than 0; an invalid value keeps
+the default.
+
 .. _suricata-yaml-configure-libhtp:
 
 Configure HTTP (libhtp)
@@ -1729,10 +1745,11 @@ use of libhtp.
        # 2 types: 'deflate', 'lzma', 'both' will decompress deflate and lzma
        # compress-depth:
        # Specifies the maximum amount of data to decompress,
-       # set 0 for unlimited.
+       # set 0 for unlimited. The maximum is 4294967282 bytes.
        # decompress-depth:
-       # Specifies the maximum amount of decompressed data to obtain,
-       # set 0 for unlimited.
+       # Specifies the maximum amount of decompressed data to obtain. The
+       # output buffer grows on demand up to this limit. Set 0 to use the
+       # default limit of 50 MB. The maximum is 2147483640 bytes.
            swf-decompression:
              enabled: yes
              type: both
@@ -1894,6 +1911,67 @@ The `max-session-cache-size` setting controls the size of a generic hash table t
 SMB session to filenames, GUIDs and share names.
 
 
+Configure NFS
+~~~~~~~~~~~~~
+
+Resource limits
+^^^^^^^^^^^^^^^
+
+Several options are available for limiting record sizes and queued out of
+order file data.
+
+::
+
+    nfs:
+      enabled: yes
+      max-read-size: 16mb
+      max-write-size: 16mb
+      max-metadata-size: 16mb
+
+      max-read-queue-size: 64mb
+      max-read-queue-cnt: 64
+
+      max-write-queue-size: 64mb
+      max-write-queue-cnt: 64
+
+The `max-read-size` option can be set to control the max size of accepted
+READ responses. Events will be raised if READ responses claim or carry too
+much data. A value of 0 disables the checks.
+
+The `max-write-size` option can be set to control the max size of accepted
+WRITE request records. Events will be raised if a WRITE request claims too
+much data. A value of 0 disables the checks.
+
+The `max-metadata-size` option can be set to control how much of a partial
+NFSv3 LOOKUP, READDIRPLUS or CREATE reply may be buffered towards the size its
+RPC record claims, so the file handle to filename mapping is kept. A value of 0
+falls back to the default of 16mb: this limit cannot be disabled. It is
+separate from `max-read-size`, which only bounds READ data.
+
+For file tracking the parser queues up out of order file data per file
+transaction. To avoid using too much memory the parser allows for limiting
+both the size in bytes and the number of queued chunks.
+
+::
+
+    nfs:
+      enabled: yes
+
+      max-read-queue-size: 64mb
+      max-read-queue-cnt: 64
+
+      max-write-queue-size: 64mb
+      max-write-queue-cnt: 64
+
+`max-read-queue-size` controls how many bytes can be queued per file for
+out of order READ data. `max-read-queue-cnt` controls how many chunks can
+be queued per file. When a limit is exceeded the data is discarded and an
+event is raised.
+
+`max-write-queue-size` and `max-write-queue-cnt` are as the READ variants,
+but then for WRITEs.
+
+
 Configure DCERPC
 ~~~~~~~~~~~~~~~~
 
@@ -1913,7 +1991,7 @@ of analysis and the resource consumption.
 Its default value is 4096 bytes, but it can be set to any uint32 by a flow.
 
 `http2.max-streams` refers to `SETTINGS_MAX_CONCURRENT_STREAMS` from rfc 7540 section 6.5.2.
-Its default value is unlimited.
+Its default value is 256.
 
 SSL/TLS
 ~~~~~~~
@@ -2015,6 +2093,19 @@ default is 1 MB.
       mqtt:
         max-msg-length: 1mb
 
+RFB
+~~~
+
+RFB can have some strings whose maximum length according to the RFC is 4GiB.
+In order to limit ram consumption and log output, a configuration parameter ``max-string-length`` is available.
+This limit will also apply during detection.
+An event ``rfb.too_long_string`` will be emitted when a string exceeds the limit. The default is 4 KiB.
+
+::
+
+      rfb:
+        max-string-length: 4 KiB
+
 SMTP
 ~~~~~~
 
@@ -2037,7 +2128,7 @@ incompatible with ``decode-mime``. If both are enabled,
 Maximum transactions
 ~~~~~~~~~~~~~~~~~~~~
 
-SMTP, MQTT, FTP, PostgreSQL, SMB, DCERPC, HTTP1, ENIP and NFS have each a `max-tx`
+SMTP, MQTT, FTP, PGSQL, SMB, DCERPC, HTTP1, ENIP and NFS have each a `max-tx`
 parameter that can be customized.
 `max-tx` refers to the maximum number of live transactions for each flow.
 An app-layer event `protocol.too_many_transactions` is triggered when this value is reached.
@@ -2052,6 +2143,17 @@ For HTTP2, this parameter is named `max-streams` as an HTTP2 stream will get tra
 into one Suricata transaction. This configuration parameter is used whatever the
 value of `SETTINGS_MAX_CONCURRENT_STREAMS` negotiated between a client and a server
 in a specific flow is.
+
+Maximum Responses
+~~~~~~~~~~~~~~~~~
+
+LDAP and PGSQL each have a `max-responses` parameter that can be customized.
+`max-responses` refers to the maximum number of responses a single protocol
+transaction can hold. An app-layer event `protocol.too_many_responses` is triggered when this value is reached.
+As with `max-transactions` the point of this setting is to find a balance between visibility and resource consumption.
+When this cap is reached, new responses to the same transaction will not be pushed nor logged, but the parser will keep inspecting further transactions normally.
+
+.. note:: For PGSQL, the `too_many_responses` event is issued only once per transaction.
 
 Engine Logging
 --------------
@@ -2779,8 +2881,8 @@ use of.
     vista: []
     windows2k3: []
 
-Suricata as a Firewall options (experimental)
----------------------------------------------
+Suricata as a Firewall options
+------------------------------
 
 It is possible to run Suricata as a firewall.
 Please read :ref:`Firewall Mode Design <firewall mode design>` before using this.
@@ -3106,6 +3208,43 @@ default.
 Using this default setting, flows will be associated only if the compared packet
 headers are encapsulated in the same number of headers.
 
+.. _tunnels:
+
+Tunnels
+~~~~~~~
+
+If your packets sources are multiple tunnels encapsulating the traffic,
+you can configure the ``decoder.tunnels`` section to assign a tunnel
+identifier to each of these tunnels. Such tunnel traffic is
+unidirectional from a sender (like a switch doing traffic mirroring) to
+the ip address where Suricata is listening.
+
+.. note:: This setting is thus not meant for firewall nor IPS mode.
+
+These tunnel identifiers are used in flow hashing to be able to distinguish
+the same-looking flow (same 5-tuple) from different tunnels, meaning it
+is in fact a different subnetwork (like a VLAN identifier).
+
+Valid tunnel ids range from 1 to 32767.
+
+The supported tunnel types are:
+
+- vxlan
+- erspan2
+
+This section is a list of tunnels with the following parameters:
+::
+
+    - id: 1
+      type: erspan2 # or vxlan
+      src: 192.168.1.1
+      dst: 192.168.1.3 # ip address where suricata is receiving the traffic
+      session: 123 # erspan span id or vxlan vni
+
+Only IPv4 addresses are supported for now.
+
+These tunnel identifiers can be used for multi-tenancy.
+
 Advanced Options
 ----------------
 
@@ -3166,7 +3305,13 @@ Suricata 7.0 default:
        # Allow Lua rules. Enabled by default.
        #allow-rules: true
 
-       # Upper bound of allocations by a Lua rule before it will fail
+       # Upper bound of live memory a sandboxed Lua state may grow
+       # beyond its setup-time footprint (the loaded libs, the script
+       # chunk and the values thread_init() stored). Per-call working
+       # memory and memory the script retains between calls (module
+       # variables, upvalues, cached handles) count against it; the
+       # setup-time footprint and the call's own inputs (the inspected
+       # buffer and args) do not.
        #max-bytes: 500000 
 
        # Upper bound of lua instructions by a Lua rule before it will fail

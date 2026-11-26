@@ -26,7 +26,6 @@
 
 #include "rust.h"
 #include "app-layer-parser.h"
-#include "app-layer-frames.h"
 #include "util-streaming-buffer.h"
 
 /* Limit till the data would be buffered in current line */
@@ -133,6 +132,7 @@ typedef struct SMTPState_ {
     AppLayerStateData state_data;
     SMTPTransaction *curr_tx;
     TAILQ_HEAD(, SMTPTransaction_) tx_list;  /**< transaction list */
+    uint64_t nb_live_tx;
     uint64_t tx_cnt;
     uint64_t toserver_data_count;
     uint64_t toserver_last_data_stamp;

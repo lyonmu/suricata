@@ -39,7 +39,6 @@
 #include "flow-util.h"
 
 #include "util-debug.h"
-#include "util-unittest.h"
 #include "util-unittest-helper.h"
 
 #include "app-layer.h"
@@ -71,6 +70,9 @@ void DetectSslVersionRegister(void)
     sigmatch_table[DETECT_SSL_VERSION].AppLayerTxMatch = DetectSslVersionMatch;
     sigmatch_table[DETECT_SSL_VERSION].Setup = DetectSslVersionSetup;
     sigmatch_table[DETECT_SSL_VERSION].Free = DetectSslVersionFree;
+    /* ssl_version matches the record version, which can be seen before the
+     * hello is decoded: a miss must stay revisitable across records. */
+    sigmatch_table[DETECT_SSL_VERSION].flags |= SIGMATCH_STATEFUL;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_SSL_VERSION].RegisterTests = DetectSslVersionRegisterTests;
 #endif

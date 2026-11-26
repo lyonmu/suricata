@@ -42,13 +42,13 @@
 #include "detect-isdataat.h"
 #include "detect-flow.h"
 #include "detect-ttl.h"
+#include "detect-threshold.h"
 #include "detect-tcp-flags.h"
 #include "detect-tcp-ack.h"
 #include "detect-ipopts.h"
 #include "detect-tcp-seq.h"
 #include "feature.h"
 #include "util-print.h"
-#include "util-time.h"
 #include "util-validate.h"
 #include "util-conf.h"
 #include "detect-flowbits.h"
@@ -193,7 +193,7 @@ void EngineAnalysisFP(const DetectEngineCtx *de_ctx, const Signature *s, const c
         }
     }
 
-    FILE *fp = de_ctx->ea->rule_engine_analysis_fp;
+    FILE *fp = de_ctx->ea->fp_engine_analysis_fp;
     fprintf(fp, "== Sid: %u ==\n", s->id);
     fprintf(fp, "%s\n", line);
 
@@ -446,7 +446,10 @@ static int SetupRuleAnalyzer(DetectEngineCtx *de_ctx)
 
 static void CleanupFPAnalyzer(DetectEngineCtx *de_ctx)
 {
-    FILE *fp = de_ctx->ea->rule_engine_analysis_fp;
+    FILE *fp = de_ctx->ea->fp_engine_analysis_fp;
+    if (fp == NULL) {
+        return;
+    }
     fprintf(fp, "============\n"
                 "Summary:\n============\n");
 
@@ -462,15 +465,15 @@ static void CleanupFPAnalyzer(DetectEngineCtx *de_ctx)
                 (float)((double)f->tot / (float)f->cnt));
     }
 
-    fclose(de_ctx->ea->rule_engine_analysis_fp);
-    de_ctx->ea->rule_engine_analysis_fp = NULL;
+    fclose(de_ctx->ea->fp_engine_analysis_fp);
+    de_ctx->ea->fp_engine_analysis_fp = NULL;
 }
 
 static void CleanupRuleAnalyzer(DetectEngineCtx *de_ctx)
 {
-    if (de_ctx->ea->fp_engine_analysis_fp != NULL) {
-        fclose(de_ctx->ea->fp_engine_analysis_fp);
-        de_ctx->ea->fp_engine_analysis_fp = NULL;
+    if (de_ctx->ea->rule_engine_analysis_fp != NULL) {
+        fclose(de_ctx->ea->rule_engine_analysis_fp);
+        de_ctx->ea->rule_engine_analysis_fp = NULL;
     }
     if (de_ctx->ea->percent_re != NULL) {
         pcre2_code_free(de_ctx->ea->percent_re);
@@ -1514,6 +1517,21 @@ void EngineAnalysisRules2(const DetectEngineCtx *de_ctx, const Signature *s)
     }
     SCJbClose(ctx.js);
 
+    if (s->type == SIG_TYPE_IPONLY && s->sm_arrays[DETECT_SM_LIST_THRESHOLD] != NULL) {
+        const SigMatchData *smd = s->sm_arrays[DETECT_SM_LIST_THRESHOLD];
+        while (1) {
+            if ((smd->type == DETECT_THRESHOLD || smd->type == DETECT_DETECTION_FILTER) &&
+                    ((const DetectThresholdData *)smd->ctx)->track == TRACK_FLOW) {
+                AnalyzerWarning(&ctx, (char *)"threshold by_flow with an IP Only rule "
+                                              "is ineffective for higher counts");
+                break;
+            }
+            if (smd->is_last)
+                break;
+            smd++;
+        }
+    }
+
     if (pkt_mpm || app_mpm) {
         SCJbOpenObject(ctx.js, "mpm");
 
@@ -1781,6 +1799,7 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
     uint32_t warn_non_alproto_fp_for_alproto_sig = 0;
     uint32_t warn_no_direction = 0;
     uint32_t warn_both_direction = 0;
+    uint32_t warn_threshold_by_flow_iponly = 0;
 
     EngineAnalysisItemsInit(de_ctx->ea);
 
@@ -1870,6 +1889,13 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
             else if (sm->type == DETECT_FLAGS) {
                 if (sm->ctx != NULL) {
                     rule_flags = 1;
+                }
+            }
+            if (sm->type == DETECT_THRESHOLD || sm->type == DETECT_DETECTION_FILTER) {
+                if ((s->type == SIG_TYPE_IPONLY) &&
+                        ((DetectThresholdData *)sm->ctx)->track == TRACK_FLOW) {
+                    warn_threshold_by_flow_iponly = 1;
+                    rule_warning += 1;
                 }
             }
         } /* for (sm = s->init_data->smlists[list_id]; sm != NULL; sm = sm->next) */
@@ -2137,6 +2163,10 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
             fprintf(fp, "    Warning: Rule requires file-store but the output file-store is not "
                         "enabled.\n");
         }
+        if (warn_threshold_by_flow_iponly) {
+            fprintf(fp, "    Warning: Rule uses threshold by_flow with an IP Only rule which "
+                        "is ineffective for higher counts.\n");
+        }
         if (rule_warning == 0) {
             fprintf(fp, "    No warnings for this rule.\n");
         }
@@ -2145,6 +2175,56 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
 }
 
 #include "app-layer-parser.h"
+
+/**
+ * \brief Render a resolved firewall default policy as "<action>:<scope>".
+ *
+ * \retval true \p out holds the rendered policy
+ * \retval false the policy could not be rendered
+ */
+static bool FirewallPolicyToString(
+        const struct DetectFirewallPolicy *p, char *out, const size_t out_size)
+{
+    const char *as = ActionScopeToString(p->action_scope);
+    DEBUG_VALIDATE_BUG_ON(as == NULL);
+    if (as == NULL)
+        return false;
+    if (p->action & ACTION_REJECT_ANY) {
+        if (p->action & ACTION_REJECT_DST) {
+            snprintf(out, out_size, "rejectdst:%s", as);
+        } else if (p->action & ACTION_REJECT_BOTH) {
+            snprintf(out, out_size, "rejectboth:%s", as);
+        } else {
+            snprintf(out, out_size, "rejectsrc:%s", as);
+        }
+    } else if (p->action & ACTION_DROP) {
+        snprintf(out, out_size, "drop:%s", as);
+    } else if (p->action & ACTION_ACCEPT) {
+        snprintf(out, out_size, "accept:%s", as);
+    } else {
+        DEBUG_VALIDATE_BUG_ON(1);
+        return false;
+    }
+    if (p->action & ACTION_PASS) {
+        if (p->action_scope == ACTION_SCOPE_FLOW || p->action_scope == ACTION_SCOPE_PACKET) {
+            if (strlcat(out, ",pass:", out_size) >= out_size ||
+                    strlcat(out, as, out_size) >= out_size) {
+                DEBUG_VALIDATE_BUG_ON(1);
+                return false;
+            }
+        } else {
+            DEBUG_VALIDATE_BUG_ON(1);
+            return false;
+        }
+    }
+    if (p->action & ACTION_ALERT) {
+        if (strlcat(out, ",alert", out_size) >= out_size) {
+            DEBUG_VALIDATE_BUG_ON(1);
+            return false;
+        }
+    }
+    return true;
+}
 
 static void AddPolicy(const DetectEngineCtx *de_ctx, RuleAnalyzer *ctx, const AppProto a,
         const uint8_t sub_state, const uint8_t state, const uint8_t direction)
@@ -2158,34 +2238,8 @@ static void AddPolicy(const DetectEngineCtx *de_ctx, RuleAnalyzer *ctx, const Ap
             HashTableLookup(fw_policies->app_policies, (void *)&lookup, 0);
     if (ap == NULL)
         return;
-    const struct DetectFirewallPolicy *p = &ap->policy;
-
-    const char *as = ActionScopeToString(p->action_scope);
-    DEBUG_VALIDATE_BUG_ON(as == NULL);
-    if (as == NULL)
+    if (!FirewallPolicyToString(&ap->policy, policy_string, sizeof(policy_string)))
         return;
-    if (p->action & ACTION_REJECT_ANY) {
-        if (p->action & ACTION_REJECT_DST) {
-            snprintf(policy_string, sizeof(policy_string), "rejectdst:%s", as);
-        } else if (p->action & ACTION_REJECT_BOTH) {
-            snprintf(policy_string, sizeof(policy_string), "rejectboth:%s", as);
-        } else {
-            snprintf(policy_string, sizeof(policy_string), "rejectsrc:%s", as);
-        }
-    } else if (p->action & ACTION_DROP) {
-        snprintf(policy_string, sizeof(policy_string), "drop:%s", as);
-    } else if (p->action & ACTION_ACCEPT) {
-        snprintf(policy_string, sizeof(policy_string), "accept:%s", as);
-    } else {
-        DEBUG_VALIDATE_BUG_ON(1);
-    }
-    if (p->action & ACTION_PASS) {
-        if (p->action_scope == ACTION_SCOPE_FLOW) {
-            strlcat(policy_string, ",pass:flow", sizeof(policy_string));
-        } else {
-            DEBUG_VALIDATE_BUG_ON(1);
-        }
-    }
     SCJbSetString(ctx->js, "policy", policy_string);
 }
 
@@ -2258,7 +2312,11 @@ int FirewallAnalyzer(const DetectEngineCtx *de_ctx)
 
     SCJbOpenObject(ctx.js, "tables");
     SCJbOpenObject(ctx.js, "packet:filter");
-    SCJbSetString(ctx.js, "policy", "drop:packet");
+    char pkt_policy[64] = "";
+    if (FirewallPolicyToString(&de_ctx->fw_policies->pkt[DETECT_FIREWALL_POLICY_PACKET_FILTER],
+                pkt_policy, sizeof(pkt_policy))) {
+        SCJbSetString(ctx.js, "policy", pkt_policy);
+    }
     SCJbOpenArray(ctx.js, "rules");
     uint32_t accept_rules = 0;
     uint32_t last_sid = 0;

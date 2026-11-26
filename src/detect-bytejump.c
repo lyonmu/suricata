@@ -38,7 +38,6 @@
 #include "detect-uricontent.h"
 
 #include "util-byte.h"
-#include "util-unittest.h"
 #include "util-debug.h"
 #include "util-validate.h"
 #include "detect-pcre.h"
@@ -97,7 +96,7 @@ void DetectBytejumpRegister (void)
  */
 static inline bool DetectBytejumpValidateNbytesOnly(const DetectBytejumpData *data, int32_t nbytes)
 {
-    return (data->flags & DETECT_BYTEJUMP_STRING && nbytes <= 23) || (nbytes <= 8);
+    return nbytes >= 0 && ((data->flags & DETECT_BYTEJUMP_STRING && nbytes <= 23) || (nbytes <= 8));
 }
 
 static bool DetectBytejumpValidateNbytes(const DetectBytejumpData *data, int32_t nbytes)
